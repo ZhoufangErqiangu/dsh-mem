@@ -1,0 +1,142 @@
+import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import test from 'node:test'
+
+import { apply, name } from '../index.js'
+
+const scratch = []
+
+async function workspace() {
+  const root = await mkdtemp(path.join(tmpdir(), 'dsh-mem-plugin-'))
+  scratch.push(root)
+  await mkdir(path.join(root, '.git'), { recursive: true })
+  return root
+}
+
+test.after(async () => {
+  await Promise.all(scratch.map(dir => rm(dir, { recursive: true, force: true })))
+})
+
+function fakeRuntime(cwd, home) {
+  const tools = new Map()
+  const listeners = new Map()
+  const ctx = {
+    effect: factory => factory(),
+    on: (event, handler) => {
+      listeners.set(event, handler)
+      return () => listeners.delete(event)
+    },
+    tools: {
+      register: (definition) => {
+        tools.set(definition.name, definition)
+        return () => tools.delete(definition.name)
+      },
+    },
+    workingDirectory: { ensure: async () => cwd },
+    logger: { warn: () => {} },
+  }
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  return {
+    ctx,
+    tools,
+    listeners,
+    restore: () => {
+      if (previous === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previous
+    },
+  }
+}
+
+function session() {
+  return { surface: { nodes: [] }, eventAt: () => undefined }
+}
+
+function payload(agent, turn = 1, step = 1) {
+  return { agent, turn, step, signal: new AbortController().signal }
+}
+
+test('apply registers the three memory tools', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    assert.deepEqual([...runtime.tools.keys()].sort(), ['memory_read', 'memory_search', 'memory_write'])
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('pre-step injects the memory context once per turn and stays silent afterwards', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = runtime.listeners.get('agent/pre-step')
+    assert.equal(typeof handler, 'function')
+    const agent = { session: session() }
+    const next = async () => ({ kind: 'messages', messages: [{ id: 'prompt' }] })
+
+    const first = await handler(payload(agent, 1, 1), next)
+    assert.equal(first.messages.length, 2)
+    const injected = first.messages[1]
+    assert.equal(injected.source.kind, name)
+    assert.match(injected.content[0].text, /no saved notes yet/u)
+
+    const second = await handler(payload(agent, 1, 2), next)
+    assert.equal(second.messages.length, 1)
+
+    const nextTurn = await handler(payload(agent, 2, 1), next)
+    assert.equal(nextTurn.messages.length, 2, 'a new turn re-checks visible history')
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('a rejected pre-step never receives memory context', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = runtime.listeners.get('agent/pre-step')
+    const agent = { session: session() }
+    const rejection = { kind: 'reject', reason: 'empty' }
+    assert.equal(await handler(payload(agent), async () => rejection), rejection)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('memory_write then a later turn recalls the saved note', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const saved = await write.execute(
+      { title: 'Release flow', content: '# Release flow\n\nTag first, then publish.' },
+      { agent: { session: session() }, signal: new AbortController().signal },
+    )
+    assert.equal(saved.file, 'release-flow.md')
+    assert.match(saved.line, /Release flow/u)
+
+    const handler = runtime.listeners.get('agent/pre-step')
+    const agent = { session: session() }
+    const injected = await handler(payload(agent), async () => ({ kind: 'messages', messages: [{ id: 'prompt' }] }))
+    assert.equal(injected.messages.length, 2)
+    assert.match(injected.messages[1].content[0].text, /release-flow\.md/u)
+    assert.match(injected.messages[1].content[0].text, /1 note saved/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})

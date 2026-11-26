@@ -1,0 +1,6 @@
+- insert:
+    - id: memory
+      name: '@local/dsh-memory'
+      config:
+        maxIndexLines: 200
+        maxIndexBytes: 25000

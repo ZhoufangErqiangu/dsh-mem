@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Project memory",
+    "description": "Gives agents a persistent per-project memory index plus memory_write, memory_read, and memory_search tools, stored as plain markdown under the harness home.",
+    "detail": "docs/DETAIL.md"
+  }
+}

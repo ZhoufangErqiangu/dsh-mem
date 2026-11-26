@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Project memory">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7f5ef"/>
+      <stop offset="1" stop-color="#e6e0d2"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#1f6feb"/>
+  <path d="M156 108h168a40 40 0 0 1 40 40v216a40 40 0 0 1-40 40H156a40 40 0 0 1-40-40V148a40 40 0 0 1 40-40z" fill="url(#page)"/>
+  <path d="M116 148a40 40 0 0 1 40-40h28v296h-28a40 40 0 0 1-40-40z" fill="#d7cfbd"/>
+  <path d="M212 176h124M212 236h124M212 296h88" stroke="#3b3630" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="212" cy="356" r="14" fill="#1f6feb"/>
+  <path d="M240 348h96" stroke="#1f6feb" stroke-width="18" stroke-linecap="round"/>
+</svg>
