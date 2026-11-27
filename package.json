@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "File-based project memory for DeepSeek Harness: a MEMORY.md index injected per session, plus memory_write, memory_read, and memory_search tools.",
