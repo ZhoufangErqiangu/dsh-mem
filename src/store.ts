@@ -203,8 +203,12 @@ export function renderIndex(entries: readonly MemoryEntry[]): string {
   return lines.join('\n')
 }
 
-/** Publish one file atomically so a crash cannot leave a half-written index. */
-async function atomicWrite(file: string, text: string): Promise<void> {
+/**
+ * Publish one file atomically so a crash cannot leave a half-written index.
+ * @param file - absolute target path.
+ * @param text - complete contents.
+ */
+export async function atomicWrite(file: string, text: string): Promise<void> {
   const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
   try {
     await writeFile(temporary, text, 'utf8')

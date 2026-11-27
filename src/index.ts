@@ -2,8 +2,8 @@
  * `@local/dsh-memory` — durable, file-based project memory for DSH agents.
  *
  * Each session receives the project's `MEMORY.md` index as one injected context
- * message, and five tools maintain the store: `memory_write`, `memory_read`,
- * `memory_search`, `memory_delete`, and `memory_audit`. Files live under
+ * message, and six tools maintain the store: `memory_write`, `memory_read`,
+ * `memory_search`, `memory_delete`, `memory_audit`, and `memory_dream`. Files live under
  * `<harness home>/memory/<project key>/` as plain markdown, so they are
  * inspectable, editable, and never mixed into the repository.
  *
@@ -12,6 +12,9 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { auditMemory } from './audit.ts'
+import { runDream } from './dream.ts'
+import { tryAcquireCurationLock } from './lock.ts'
+import { finishCuration, markSession } from './state.ts'
 import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './store.ts'
 import { dshHome, findProjectRoot, memoryDir } from './paths.ts'
 import { renderEntry, renderMemoryContext } from './render.ts'
@@ -21,6 +24,7 @@ import type {
   Context,
   ContentBlock,
   DeleteMemoryResult,
+  DreamResult,
   MemoryEntry,
   MemoryMatch,
   MemoryMessageSource,
@@ -52,6 +56,12 @@ const DEFAULT_STALE_DAYS = 90
 const DEFAULT_DUPLICATE_THRESHOLD = 0.6
 const DEFAULT_OVERSIZE_BYTES = 16_384
 const DEFAULT_MAX_AUDIT_NOTES = 200
+const DEFAULT_CURATION_ENABLED = false
+const DEFAULT_CURATION_MIN_HOURS = 24
+const DEFAULT_CURATION_MIN_SESSIONS = 5
+const DEFAULT_CURATION_RETRY_HOURS = 1
+const DEFAULT_CURATION_TIMEOUT_MS = 600_000
+const DEFAULT_CURATION_MAX_TOKENS = 4_096
 
 /** Canonical value of one successful `memory_write`. */
 export interface MemoryWriteOutput {
@@ -118,6 +128,14 @@ function normalizeSettings(config?: unknown): Settings {
     duplicateThreshold: boundedNumber(row.duplicateThreshold, DEFAULT_DUPLICATE_THRESHOLD, 0.3, 0.95),
     oversizeBytes: boundedInteger(row.oversizeBytes, DEFAULT_OVERSIZE_BYTES, 1024),
     maxAuditNotes: Math.min(boundedInteger(row.maxAuditNotes, DEFAULT_MAX_AUDIT_NOTES, 1), 1000),
+    curationEnabled: row.curationEnabled === true,
+    curationMinHours: boundedInteger(row.curationMinHours, DEFAULT_CURATION_MIN_HOURS, 1),
+    curationMinSessions: boundedInteger(row.curationMinSessions, DEFAULT_CURATION_MIN_SESSIONS, 1),
+    curationRetryHours: boundedInteger(row.curationRetryHours, DEFAULT_CURATION_RETRY_HOURS, 1),
+    curationTimeoutMs: boundedInteger(row.curationTimeoutMs, DEFAULT_CURATION_TIMEOUT_MS, 30_000),
+    curationProvider: stringOf(row.curationProvider)?.trim() ?? '',
+    curationModel: stringOf(row.curationModel)?.trim() ?? '',
+    curationMaxTokens: boundedInteger(row.curationMaxTokens, DEFAULT_CURATION_MAX_TOKENS, 256),
     home: dshHome(),
   }
 }
@@ -183,6 +201,12 @@ export function apply(ctx: Context, config?: unknown): void {
    * index, because the tool result already carries the updated index line.
    */
   const acknowledged = new WeakMap<Session, string>()
+  /** Sessions owned by a curation pass; they never trigger or receive another. */
+  const dreamSessions = new Set<SessionId>()
+  /** Sessions already counted toward the Auto Dream gate. */
+  const countedSessions = new WeakSet<Session>()
+  /** Set while the `agents` service is available and curation is enabled. */
+  let triggerCuration: ((agent: Agent) => void) | undefined
 
   /** Resolve the project and its memory directory for one agent. */
   const projectFor = async (agent: Agent, signal?: AbortSignal): Promise<ProjectScope> => {
@@ -629,6 +653,108 @@ export function apply(ctx: Context, config?: unknown): void {
   ctx.effect(() => ctx.tools.register(deleteTool))
   ctx.effect(() => ctx.tools.register(auditTool))
 
+  // Curation needs the agent factory. The manual tool is always available when
+  // the service exists; the automatic trigger is added only when enabled.
+  ctx.inject(['agents'], (scope) => {
+    /**
+     * Run one pass under the project's curation lock, or return undefined when
+     * another pass already owns it.
+     */
+    const run = async (agent: Agent, signal?: AbortSignal): Promise<DreamResult | undefined> => {
+      const project = await projectFor(agent, signal)
+      const release = await tryAcquireCurationLock(project.memoryDir)
+      if (release === undefined) return undefined
+      try {
+        const entries = await loadIndex(project.memoryDir)
+        if (entries.length === 0) return { ok: true, notes: 0, summary: 'No notes to curate.' }
+        const result = await runDream({
+          createAgent: options => scope.agents.create(options),
+          parent: agent,
+          project,
+          settings,
+          ...(signal === undefined ? {} : { signal }),
+          onStarted: sessionId => dreamSessions.add(sessionId),
+          onFinished: sessionId => dreamSessions.delete(sessionId),
+        })
+        await finishCuration(project.memoryDir, result)
+        return result
+      }
+      finally {
+        await release()
+      }
+    }
+
+    if (settings.curationEnabled) {
+      const start = (agent: Agent): void => {
+        void (async () => {
+          try {
+            const project = await projectFor(agent)
+            const entries = await loadIndex(project.memoryDir)
+            const marked = await markSession(project.memoryDir, settings, entries.length > 0)
+            if (!marked.due) return
+            const result = await run(agent)
+            if (result === undefined) return
+            ctx.logger.info('memory curation %s: %d notes remain', result.ok ? 'completed' : 'failed', result.notes)
+          }
+          catch (error) {
+            ctx.logger.warn('memory curation failed: %o', error)
+          }
+        })()
+      }
+      triggerCuration = start
+      scope.effect(() => () => {
+        if (triggerCuration === start) triggerCuration = undefined
+      })
+    }
+
+    const dreamTool: ToolDefinition = {
+      name: 'memory_dream',
+      description: 'Run one memory curation pass now in a restricted background child agent. Uses one model turn. The automatic Auto Dream pass is opt-in; this is its explicit equivalent. For a small cleanup, prefer memory_audit and memory_delete directly.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {},
+      },
+      timeoutMs: Math.min(settings.curationTimeoutMs + 60_000, 900_000),
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['ok', 'notes', 'summary', 'error'],
+          properties: {
+            ok: { type: 'boolean' },
+            notes: { type: 'integer' },
+            summary: { type: 'string' },
+            error: { type: 'string' },
+          },
+        },
+        render: (_args, value) => {
+          const output = value as unknown as DreamResult
+          return [{
+            type: 'text',
+            text: output.ok
+              ? `Curation completed; ${output.notes} notes remain.${output.summary.length > 0 ? `\n${output.summary}` : ''}`
+              : `Curation failed: ${output.error ?? 'unknown error'}`,
+          }]
+        },
+      },
+      async execute(_args: unknown, exec: ToolRunContext) {
+        if (exec.agent === undefined) throw new Error('memory_dream requires an agent session')
+        const result = await run(exec.agent, exec.signal)
+        if (result === undefined) {
+          return { ok: false, notes: 0, summary: '', error: 'a curation pass is already running for this project' } satisfies DreamResult
+        }
+        return {
+          ok: result.ok,
+          notes: result.notes,
+          summary: result.summary,
+          error: result.error ?? '',
+        } satisfies DreamResult
+      },
+    }
+    scope.effect(() => scope.tools.register(dreamTool))
+  })
+
   // The Web UI panel reaches the same store through one owner-only exact route.
   // Tools and the panel therefore share one implementation of every operation.
   ctx.inject(['connection', 'agents'], (scope) => {
@@ -710,6 +836,14 @@ export function apply(ctx: Context, config?: unknown): void {
     if (signal.aborted) return decision
     // An empty first entry owns a no-step turn; keep the context for a later step.
     if (step === 1 && decision.messages.length === 0) return decision
+    const sessionId = agent.session.header.id
+    if (dreamSessions.has(sessionId)) return decision
+    if (triggerCuration !== undefined
+      && agent.session.header.origin !== 'subagent'
+      && !countedSessions.has(agent.session)) {
+      countedSessions.add(agent.session)
+      triggerCuration(agent)
+    }
     let context: RenderedMemory
     try {
       context = await contextFor(agent, signal)

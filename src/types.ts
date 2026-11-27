@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-working-directory'
 
 export type { Context } from '@deepseek-ai/cordis'
-export type { Agent } from '@deepseek-ai/dsh-agent'
+export type { Agent, AgentHandle, AgentOptions, AgentSetup, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 export type { Session, SessionId } from '@deepseek-ai/dsh-session'
 export type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 export type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -65,6 +65,22 @@ export interface Settings {
   oversizeBytes: number
   /** Upper bound on notes inspected by one audit. */
   maxAuditNotes: number
+  /** Whether the gated Auto Dream curation pass may run. Defaults to false. */
+  curationEnabled: boolean
+  /** Minimum hours since the last successful curation. */
+  curationMinHours: number
+  /** Minimum completed sessions since the last successful curation. */
+  curationMinSessions: number
+  /** Minimum hours between failed or abandoned curation attempts. */
+  curationRetryHours: number
+  /** Hard limit for one curation session. */
+  curationTimeoutMs: number
+  /** Optional provider override for the curation session. */
+  curationProvider: string
+  /** Optional model override for the curation session. */
+  curationModel: string
+  /** Output-token limit for the curation session. */
+  curationMaxTokens: number
   home: string
 }
 
@@ -155,6 +171,30 @@ export interface AuditOptions {
   maxIndexLines: number
   maxIndexBytes: number
   oversizeBytes: number
+}
+
+/** Durable per-project curation clock, stored beside the index. */
+export interface CurationState {
+  version: 1
+  sessionsSinceCurate: number
+  lastSessionAt?: string
+  lastCuratedAt?: string
+  lastCuratedBy?: 'dream'
+  lastDreamAttemptAt?: string
+  lastDreamError?: string
+  lastCuration?: {
+    at: string
+    notes: number
+    summary: string
+  }
+}
+
+/** Outcome of one curation session. */
+export interface DreamResult {
+  ok: boolean
+  notes: number
+  summary: string
+  error?: string
 }
 
 /** One audit report. */

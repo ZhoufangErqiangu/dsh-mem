@@ -1,7 +1,7 @@
 # 路线图：从基础记忆到可维护的记忆
 
 - 日期：2026-11-27
-- 当前版本：`0.3.0`（TypeScript + tsdown，测试 37 项通过）
+- 当前版本：`0.3.0`（TypeScript + tsdown，测试 50 项通过）
 - 相关：[CURATION.md](./CURATION.md)（整理功能详细设计）、[DETAIL.md](./DETAIL.md)
 
 ## 1. 基线
@@ -10,11 +10,11 @@
 
 - 每个项目一个记忆目录，`MEMORY.md` 索引 + 一篇笔记一个文件。
 - 会话开始时注入一次索引（200 行 / 25 KB 预算），压缩或外部变更后重新注入。
-- 五个模型工具：`memory_write`、`memory_read`、`memory_search`、`memory_delete`、`memory_audit`。
+- 六个模型工具：`memory_write`、`memory_read`、`memory_search`、`memory_delete`、`memory_audit`、`memory_dream`。
 - 写入确认机制：同会话自己的写不会重复注入整份索引。
 - `/memory` 面板：列表、查看、编辑、新建、删除，走 owner-only 路由。
 - 聊天行：每次注入渲染成独立可展开行。
-- 存储层、路径围栏、索引对账、预算截断、写锁、软删除/归档、相似提示、审计、注入契约、面板路由都有测试。
+- 存储层、路径围栏、索引对账、预算截断、写锁、软删除/归档、相似提示、审计、Auto Dream 状态机与受限子会话、注入契约、面板路由都有测试。
 
 不在本插件范围内（已确认）：
 
@@ -23,7 +23,13 @@
 
 ## 2. 进展
 
-**M1 已完成（2026-11-27）**：项目级写锁、`memory_delete`（默认归档）、`memory_audit`、写入相似提示、索引超预算提示；37 项测试、typecheck、build 通过。下面的差距清单保留为 M2–M4 的输入。
+**M1 已完成（2026-11-27）**：项目级写锁、`memory_delete`（默认归档）、`memory_audit`、写入相似提示、索引超预算提示。
+
+**M3 已完成（2026-11-27）**：`.state.json` 门槛（24h + 5 会话 + 重试窗口）、受限整理子会话（只保留记忆工具）、超时与 `.dream.lock`、递归守卫、手动 `memory_dream`。50 项测试、typecheck、build 通过。
+
+**M3 真实验收（2026-11-27）**：手动 `memory_dream` 在运行中的 Host 上创建子会话并完成一轮。会话日志确认：`origin: subagent`、`delegationDepth: 1`；`request/header` 的工具列表只有五个 `memory_*`；实际调用为 `memory_audit`、`memory_search`、`memory_read`；`turn/end` 为 `completed`；`.state.json` 写入 `lastCuratedAt`、`lastCuratedBy: "dream"`、`lastCuration`，两个锁文件都已清理，索引保持 1 条。自动门槛的现场触发尚未开启验证，当前由固定时钟单测覆盖。
+
+下面的差距清单保留为 M2/M4 的输入。
 
 ## 3. 差距清单
 
@@ -39,7 +45,7 @@
 | 没有整理触发信号 | 注入在超预算时指向 `memory_audit` / `memory_delete` | M1 | ✅ |
 | 没有确定性清扫 | 空文件、精确重复、临时文件无人处理 | M2 | 待做 |
 | 没有归档/恢复 | 归档已实现；`memory_restore` 未实现 | M1/M2 | 部分 |
-| 没有自动整理 | 明确列为未实现（[DETAIL.md](./DETAIL.md)） | M3 | 待做 |
+| 没有自动整理 | 已由 M3 的 Auto Dream / `memory_dream` 覆盖 | M3 | ✅ |
 | 面板没有整理入口 | 面板只有新建/保存/删除 | M2 | 待做 |
 
 ### P1 — 正确性与并发
@@ -79,7 +85,7 @@
 |---|---|---|---|
 | **M1 整理地基（已完成）** | 让 agent 能判断和清理记忆 | 项目锁、`memory_delete`（默认归档）、`memory_audit`、写入相似提示、预算提示、配置、测试 | 能删除/归档、能拿到重复/过期/超长报告、并发写不丢行、测试全绿 |
 | **M2 清扫与面板** | 让整理可见、可撤销 | `memory_sweep`、`archive/`、`memory_restore`、面板整理报告、归档/永久删除区分 | dry-run 不落盘；清扫只处理确定性项；归档可恢复；面板可用 |
-| **M3 Auto Dream** | 自动语义整理 | spike（子会话/工具限制/完成信号）、`.state.json`、24h + 5 会话门槛、整理提示词、超时与锁、开关 | 默认关闭；开启后按门槛只跑一次；不递归、不并发、失败不阻塞 |
+| **M3 Auto Dream（已完成）** | 自动语义整理 | `.state.json`、24h + 5 会话门槛、受限整理子会话、整理提示词、超时与锁、`memory_dream` 手动触发 | 默认关闭；开启后按门槛只跑一次；不递归、不并发、失败不阻塞 |
 | **M4 收尾** | 性能与产品化 | mtime 缓存、搜索字节 bug、UTF-8 截断、CI、CHANGELOG、权限、文档 | 性能可接受；CI 绿；文档与实现一致 |
 
 依赖：M2 依赖 M1 的锁和归档；M3 依赖 M1 的审计和 M2 的清扫；M4 独立，可穿插。
@@ -90,9 +96,9 @@
 
 | 版本 | 内容 | 兼容性 |
 |---|---|---|
-| `0.4.0` | M1 + M2：新工具、归档目录、状态文件、面板整理 | 索引格式不变；旧目录自动兼容；新增配置都有默认值 |
-| `0.5.0` | M3：Auto Dream（默认关闭） | 新增 `.state.json`；关闭时不产生任何行为变化 |
-| `0.6.0` | M4 + 可能的召回/作用域扩展 | 待定 |
+| `0.4.0` | M1 + M3：新工具、归档目录、审计、Auto Dream（默认关闭） | 索引格式不变；旧目录自动兼容；新增配置都有默认值 |
+| `0.5.0` | M2 + M4：确定性清扫、恢复、面板整理、性能/收尾 | 新增 `archive/` 操作与面板入口 |
+| `0.6.0` | 可能的召回/作用域扩展 | 待定 |
 
 每个版本都要求：`npm run build`、`npm run typecheck`、`npm test` 通过；新工具的描述和 schema 在 `DETAIL.md` 更新；README 的“已知边界”同步删改。
 
@@ -107,5 +113,5 @@
 ## 7. 建议的下一步
 
 1. 已确认：软删除、Auto Dream 默认关闭、近似重复只报告。剩余待定项（模型路由、全局作用域、归档溢出）见 [CURATION.md](./CURATION.md) 第 13 节。
-2. M1 已完成。下一步是 M2：`memory_sweep`、`memory_restore`、面板整理视图；M2 不依赖未验证的 DSH API。
-3. M3 开始前单独做 spike，验证 `ctx.agents.create`、工具限制和一轮结束信号；spike 不通过就把 Auto Dream 降级为“面板手动触发 + 显式工具”。
+2. M1、M3 已完成。下一步是 M2：`memory_sweep`、`memory_restore`、面板整理视图；M2 不依赖未验证的 DSH API。
+3. 重启后建议先调用一次 `memory_dream` 做真实子会话/工具限制/收尾验收；自动门槛可用较低的 `curationMinHours`/`curationMinSessions` 在测试项目上验证。

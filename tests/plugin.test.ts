@@ -8,6 +8,8 @@ import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 
 import { apply, name } from '../src/index.ts'
+import { memoryDir } from '../src/paths.ts'
+import { readState } from '../src/state.ts'
 import type { MemoryAuditOutput, MemoryDeleteOutput, MemoryWriteOutput } from '../src/index.ts'
 import type {
   Agent,
@@ -99,8 +101,15 @@ function fakeRuntime(cwd: string, home: string, options: { agents?: Array<readon
   }
 }
 
+let nextSessionId = 0
+
 function session(): Session {
-  return { surface: { nodes: [] }, eventAt: () => undefined } as unknown as Session
+  nextSessionId += 1
+  return {
+    header: { id: `session-${nextSessionId}` },
+    surface: { nodes: [] },
+    eventAt: () => undefined,
+  } as unknown as Session
 }
 
 function makeAgent(): Agent {
@@ -141,7 +150,7 @@ function sourceOf(message: UserMessage): MemoryMessageSource {
   return message.source
 }
 
-test('apply registers the five memory tools', async () => {
+test('apply registers the memory tools', async () => {
   const root = await workspace()
   const home = path.join(root, 'home')
   const runtime = fakeRuntime(root, home)
@@ -150,6 +159,7 @@ test('apply registers the five memory tools', async () => {
     assert.deepEqual([...runtime.tools.keys()].sort(), [
       'memory_audit',
       'memory_delete',
+      'memory_dream',
       'memory_read',
       'memory_search',
       'memory_write',
@@ -243,6 +253,35 @@ test('an over-budget injection points at the audit and delete tools', async () =
     assert.match(textOf(injected[1]), /over budget/u)
     assert.match(textOf(injected[1]), /memory_audit/u)
     assert.match(textOf(injected[1]), /memory_delete/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('curation counts a session before any dream is due', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, { curationEnabled: true, curationMinSessions: 5 })
+    const write = runtime.tools.get('memory_write')
+    assert.ok(write)
+    const agent = makeAgent()
+    await write.execute({ title: 'Seed', content: '# Seed\n\nNote.' }, toolContext(agent))
+
+    const handler = preStepHandler(runtime)
+    await handler(payload(agent), enterWithPrompt)
+
+    const dir = memoryDir(root, home)
+    let state = await readState(dir)
+    for (let attempt = 0; attempt < 50 && state.sessionsSinceCurate === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      state = await readState(dir)
+    }
+    assert.equal(state.sessionsSinceCurate, 1)
+    assert.ok(state.lastSessionAt)
+    assert.equal(state.lastDreamAttemptAt, undefined)
   }
   finally {
     runtime.restore()

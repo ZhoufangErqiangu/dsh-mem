@@ -1,6 +1,6 @@
 # 记忆整理（Curation）设计稿
 
-- 状态：M1 已实现（写锁、软删除、审计、相似提示、预算提示）；M2/M3 待实现
+- 状态：M1 已实现（写锁、软删除、审计、相似提示、预算提示）；M3 已实现（Auto Dream + `memory_dream`，默认关闭）；M2 待实现
 - 日期：2026-11-27
 - 适用版本：`0.4.0`（M1、M2），`0.5.0`（M3）
 - 关联：[ROADMAP.md](./ROADMAP.md)、[DETAIL.md](./DETAIL.md)
@@ -382,7 +382,7 @@ restore -> { archive } -> { entries }
 
 仍然走现有 owner-only 精确路由 `POST /api/memory`，`sessionId` 解析项目，不接受请求体里的路径。
 
-### 7.7 Auto Dream（M3，需 spike）
+### 7.7 Auto Dream（M3，已实现）
 
 #### 触发门槛
 
@@ -419,7 +419,19 @@ enabled
 - 一轮结束的可靠信号：`agent/turn-stopping` 的触发时机、`whenIdle()` 是否存在竞态。
 - `agentOptions` 能否固定 provider/model 和输出上限。
 
-**降级方案：** 如果无法安全限制子会话工具，则不做自动执行，只保留 L2 的显式工具 + 面板；Auto Dream 延后。**不允许**在没有工具限制的情况下创建能执行 shell 的子会话。
+**实现结论（M3）：** 已按首选方案实现。`setup` 在子作用域调用 `childCtx.tools.restrict({ allow: [...MEMORY_TOOL_NAMES] })`，只保留五个记忆工具；`childCtx.get('workingDirectory')` 查询服务后 `set()` 固定项目根；完成信号使用 `session/event` 的 `turn/end`；超时通过 `AbortController` + `agent.cancel()` + `dispose()` 收尾。`memory_dream` 工具复用同一实现，供用户显式触发，整理子会话的工具白名单不包含它，避免递归。
+
+**降级方案：** 如果未来 DSH 改变了 `restrict()` 语义，导致无法安全限制子会话工具，则关闭自动执行，只保留 L2 的显式工具 + 面板。**不允许**在没有工具限制的情况下创建能执行 shell 的子会话。
+
+#### 7.7.1 手动触发 `memory_dream`
+
+`memory_dream` 无参数，执行一次与自动门槛相同的整理：
+
+- 取项目级 `.dream.lock`，已有整理时立即返回 `a curation pass is already running for this project`；
+- 空项目直接返回 `No notes to curate.`；
+- 子会话受同样的工具限制和超时；
+- 成功后与自动整理一样更新 `.state.json`（重置会话计数、写 `lastCuratedAt`）；
+- `timeoutMs` 比整理超时多留 60 秒，避免工具超时先于子会话收尾。
 
 #### 整理会话提示词（草案）
 
@@ -610,21 +622,24 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 
 | 文件 | 改动 | 里程碑 |
 |---|---|---|
-| `src/lock.ts`（新） | `withStoreLock`、跨进程锁、过期锁清理 | M1 |
+| `src/lock.ts`（新） | `withStoreLock`、跨进程锁、过期锁清理、`.dream.lock` | M1/M3 |
 | `src/similarity.ts`（新） | 规范化、分词、Jaccard、聚簇 | M1 |
-| `src/audit.ts`（新） | `auditMemory`、`sweepMemory`、报告类型 | M1/M2 |
+| `src/audit.ts`（新） | `auditMemory`、报告类型（`sweepMemory` 留到 M2） | M1 |
 | `src/state.ts`（新） | `.state.json` 读写、门槛判断 `curationDue` | M3 |
+| `src/dream.ts`（新） | 整理提示词、受限子会话、超时与销毁 | M3 |
 | `src/store.ts` | 拆 `archiveMemory`；`writeMemory` 返回 `similar`；加锁；`restoreMemory` | M1/M2 |
-| `src/index.ts` | 注册 `memory_delete`、`memory_audit`、`memory_sweep`、`memory_restore`；配置；Dream | M1–M3 |
+| `src/index.ts` | 注册 `memory_delete`、`memory_audit`、`memory_dream`；配置；Auto Dream 触发（`memory_sweep`/`memory_restore` 留到 M2） | M1–M3 |
 | `src/render.ts` | 预算提示文案 | M1 |
 | `src/types.ts` | 新类型、配置字段 | M1–M3 |
 | `src/client/index.ts` | 面板元数据、整理报告、归档/永久删除、路由动作 | M2 |
 | `locale/zh.json`、`locale/en.json` | 面板文案 | M2 |
 | `tests/store.test.ts` | 锁、删除/归档、相似提示 | M1 |
 | `tests/audit.test.ts`（新） | 审计、清扫、恢复、相似度（中英文） | M1/M2 |
-| `tests/plugin.test.ts` | 新工具、预算提示、Dream 门槛 | M1/M3 |
+| `tests/plugin.test.ts` | 新工具、预算提示、会话计数 | M1/M3 |
+| `tests/state.test.ts`（新） | 状态、门槛、成功/失败结算 | M3 |
+| `tests/dream.test.ts`（新） | 提示词、工具限制、超时、子会话收尾 | M3 |
 
-模块尽量保持在 300 行以内；`src/index.ts` 已经 463 行，Dream 逻辑应放进 `src/dream.ts`，不要继续堆在入口。
+模块尽量保持在 300 行以内；`src/index.ts` 已经超过 800 行，M2 的清扫/恢复应继续拆到 `src/audit.ts`/`src/store.ts`，不要堆在入口。
 
 ## 10. 测试计划
 
@@ -670,13 +685,15 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 - 面板能查看审计报告并执行清扫；删除默认归档，永久删除有二次确认。
 - 索引、搜索、面板三处对归档的可见性一致。
 
-### M3 Auto Dream
+### M3 Auto Dream（已实现 2026-11-27）
 
-- 默认关闭；开启后 24h + 5 会话只触发一次。
-- 同一项目不会并发整理；整理会话不递归。
-- 超时/失败会释放锁并记录状态，用户会话无感。
-- 子会话工具在 spike 中确认受限；否则不合并该里程碑。
-- 整理后索引回到预算内（或报告仍超预算的原因）。
+- ✅ 默认关闭；开启后 24h + 5 会话门槛由 `.state.json` 计数与时间窗口控制。
+- ✅ 同一项目通过 `.dream.lock` 和进程内集合保证不并发整理；整理会话自身不计数、不再次触发。
+- ✅ 超时/失败会释放锁并记录 `lastDreamError`，父会话不受影响。
+- ✅ 子会话在 `setup` 里用 `tools.restrict()` 限制为五个记忆工具；该限制依赖 DSH 的 scoped context 语义。
+- ✅ `memory_dream` 提供手动触发，复用同一子会话实现。
+- ✅ 2026-11-27 手动 `memory_dream` 真实运行成功：子会话 `origin: subagent`、`delegationDepth: 1`；`request/header` 只包含五个 `memory_*` 工具；实际只调用 `memory_audit` / `memory_search` / `memory_read`；`turn/end` 为 `completed`；`.state.json` 写入 `lastCuratedAt` / `lastCuratedBy` / `lastCuration`，`.dream.lock` 与 `.store.lock` 均已清理。
+- ⏳ 自动门槛的真实触发还没有在运行中的 profile 开启验证；门槛逻辑由 `tests/state.test.ts` 的固定时钟测试覆盖。
 
 ## 12. 里程碑与估时
 
@@ -684,7 +701,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 |---|---|---|---|
 | M1 | 锁、`memory_delete`、`memory_audit`、相似提示、预算提示、测试 | 4 个提交 | 1.5–2 天 |
 | M2 | `memory_sweep`、`archive/`、`memory_restore`、面板 | 3 个提交 | 2–3 天 |
-| M3 | spike、`.state.json`、门槛、整理子会话、开关 | 3 个提交 | 3–5 天（含风险） |
+| M3 | `.state.json`、门槛、整理子会话、`memory_dream`、开关 | 已实现 | 2026-11-27 |
 | M4 | 性能、bug、CI、文档 | 按需 | 1–2 天 |
 
 依赖关系：M2 依赖 M1 的锁和归档；M3 依赖 M1 的审计与 M2 的清扫；M4 独立。
@@ -714,12 +731,12 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 2. 是否把用户级全局记忆纳入下一步？本设计不包含；按既定的作用域划分，只做项目级。
 3. `archiveOverflow` 默认是否自动执行？**建议否**，避免自动拿走旧笔记。
 
-## 14. 实施顺序（建议）
+## 14. 实施顺序
 
-1. `src/lock.ts` + `writeMemory`/`deleteMemory` 加锁，补并发测试。
-2. `archiveMemory` + `memory_delete` + 面板删除语义调整。
-3. `src/similarity.ts` + `memory_audit` + 写入相似提示。
-4. `render.ts` 预算提示 + 工具注册 + 配置 + 测试。
-5. `sweep` + `restore` + 面板整理视图。
-6. M3 spike：单独分支验证子会话创建、工具限制、完成信号；通过后再写状态机和门槛。
-7. Auto Dream + 文档 + 版本号。
+1. ✅ `src/lock.ts` + `writeMemory`/`deleteMemory` 加锁，补并发测试。
+2. ✅ `archiveMemory` + `memory_delete`（面板删除语义调整留到 M2）。
+3. ✅ `src/similarity.ts` + `memory_audit` + 写入相似提示。
+4. ✅ `render.ts` 预算提示 + 工具注册 + 配置 + 测试。
+5. ✅ M3：`.state.json` 门槛、受限整理子会话、`memory_dream`、超时/锁、文档。
+6. ⏳ M2：`sweep` + `restore` + 面板整理视图。
+7. ⏳ 版本号与发布。
