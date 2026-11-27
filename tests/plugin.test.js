@@ -19,14 +19,20 @@ test.after(async () => {
   await Promise.all(scratch.map(dir => rm(dir, { recursive: true, force: true })))
 })
 
-function fakeRuntime(cwd, home) {
+function fakeRuntime(cwd, home, options = {}) {
   const tools = new Map()
   const listeners = new Map()
+  const routes = new Map()
+  const agents = new Map(options.agents ?? [])
   const ctx = {
     effect: factory => factory(),
     on: (event, handler) => {
       listeners.set(event, handler)
       return () => listeners.delete(event)
+    },
+    inject: (_services, callback) => {
+      callback(ctx)
+      return () => {}
     },
     tools: {
       register: (definition) => {
@@ -34,6 +40,15 @@ function fakeRuntime(cwd, home) {
         return () => tools.delete(definition.name)
       },
     },
+    connection: {
+      fetch: {
+        register: (route) => {
+          routes.set(route.path, route)
+          return () => routes.delete(route.path)
+        },
+      },
+    },
+    agents: { get: sessionId => agents.get(sessionId) },
     workingDirectory: { ensure: async () => cwd },
     logger: { warn: () => {} },
   }
@@ -43,6 +58,7 @@ function fakeRuntime(cwd, home) {
     ctx,
     tools,
     listeners,
+    routes,
     restore: () => {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
@@ -218,6 +234,49 @@ test('compaction invalidates the acknowledgement', async () => {
     runtime.listeners.get('agent/created')({ agent, source: { kind: 'compaction' } })
     const afterCompaction = await handler(payload(agent, 3, 1), next)
     assert.equal(afterCompaction.messages.length, 2, 'the index returns after its history is summarized away')
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('the panel route lists, saves, reads, and deletes through the same store', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const agent = { session: session() }
+  const runtime = fakeRuntime(root, home, { agents: [['session-1', agent]] })
+  try {
+    apply(runtime.ctx, {})
+    const route = runtime.routes.get('/api/memory')
+    assert.ok(route, 'the owner-only panel route is registered')
+    const call = async (body) => {
+      const response = await route.fetch(new Request('http://localhost/api/memory', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
+      return response.json()
+    }
+
+    const saved = await call({ action: 'save', sessionId: 'session-1', title: 'Release', content: 'Tag then publish.' })
+    assert.equal(saved.ok, true)
+    assert.equal(saved.value.entry.file, 'release.md')
+
+    const listed = await call({ action: 'list', sessionId: 'session-1' })
+    assert.deepEqual(listed.value.entries.map(entry => entry.file), ['release.md'])
+
+    const read = await call({ action: 'read', sessionId: 'session-1', file: 'release.md' })
+    assert.match(read.value.content, /Tag then publish/u)
+
+    const removed = await call({ action: 'delete', sessionId: 'session-1', file: 'release.md' })
+    assert.deepEqual(removed.value.entries, [])
+
+    const missing = await call({ action: 'list', sessionId: 'other-session' })
+    assert.equal(missing.ok, false)
+    assert.equal(missing.error.code, 'no-session')
+
+    const traversal = await call({ action: 'read', sessionId: 'session-1', file: '../MEMORY.md' })
+    assert.equal(traversal.ok, false)
   }
   finally {
     runtime.restore()

@@ -10,7 +10,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { loadIndex, readMemory, searchMemory, writeMemory } from './lib/store.js'
+import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './lib/store.js'
 import { dshHome, findProjectRoot, memoryDir } from './lib/paths.js'
 import { renderEntry, renderMemoryContext } from './lib/render.js'
 
@@ -290,6 +290,66 @@ export function apply(ctx, config) {
       })
     },
   }))
+
+  // The Web UI panel reaches the same store through one owner-only exact route.
+  // Tools and the panel therefore share one implementation of every operation.
+  ctx.inject(['connection', 'agents'], (scope) => {
+    const reply = (value, status = 200) => Response.json(value, { status })
+    const failure = (code, message, status) => reply({ ok: false, error: { code, message } }, status)
+
+    const serve = async (request) => {
+      let body
+      try {
+        body = await request.json()
+      }
+      catch {
+        return failure('bad-request', 'expected a JSON body', 400)
+      }
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined
+      const agent = sessionId === undefined ? undefined : scope.agents.get(sessionId)
+      if (agent === undefined) {
+        return failure('no-session', 'open a session before managing its project memory', 409)
+      }
+      try {
+        const cwd = await scope.workingDirectory.ensure(agent, request.signal)
+        const projectRoot = findProjectRoot(cwd)
+        const dir = memoryDir(projectRoot, settings.home)
+        switch (body.action) {
+          case 'list':
+            return reply({ ok: true, value: { projectRoot, dir, entries: await loadIndex(dir) } })
+          case 'read':
+            return reply({ ok: true, value: await readMemory(dir, String(body.file ?? ''), settings.maxTopicBytes) })
+          case 'save': {
+            const stored = await writeMemory(dir, {
+              title: String(body.title ?? ''),
+              content: String(body.content ?? ''),
+              ...typeof body.file === 'string' ? { file: body.file } : {},
+              ...typeof body.summary === 'string' ? { summary: body.summary } : {},
+            })
+            return reply({
+              ok: true,
+              value: { entry: stored.entry, entries: stored.entries, line: renderEntry(stored.entry) },
+            })
+          }
+          case 'delete':
+            return reply({ ok: true, value: { entries: await deleteMemory(dir, String(body.file ?? '')) } })
+          default:
+            return failure('bad-action', 'unknown action; expected list, read, save, or delete', 400)
+        }
+      }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return failure('failed', message, 400)
+      }
+    }
+
+    scope.effect(() => scope.connection.fetch.register({
+      path: '/api/memory',
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: serve,
+    }), 'memory: panel route')
+  })
 
   // A new agent session object starts with nothing delivered; a resumed,
   // cleared, or compacted session must reconcile against visible history again

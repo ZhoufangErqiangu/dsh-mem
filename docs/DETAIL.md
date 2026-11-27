@@ -23,6 +23,26 @@ Each project gets a directory under the harness home:
 
 The project root is the nearest ancestor holding `.git`, matching how DSH scopes workspace instructions. Files are plain markdown and never appear in `git status`; edit or delete them by hand at any time, and the next session reconciles the index automatically.
 
+## The management panel
+
+`/memory` in the composer opens a management panel: the index on the left, the
+selected note's body in an editor on the right, with **New**, **Save**, and
+**Delete**. Saving writes through the same store functions the tools use, so a
+note edited in the panel is immediately visible to `memory_read`,
+`memory_search`, and the next session's index.
+
+The panel reaches the Host through one owner-only exact Fetch route,
+`POST /api/memory`. The route resolves the calling session's live agent, derives
+its project root and memory directory from that session's working directory —
+never from the request body — and then performs `list`, `read`, `save`, or
+`delete`. Connection's `/api` handler admits the browser peer first and exact
+routes are owner-only, so no other principal reaches the store. A request for an
+unknown session answers `no-session`; a malformed body answers `bad-request`.
+
+The panel never acknowledges a write for the agent's session, which is
+deliberate: a change made in the UI is an outside change from the agent's point
+of view, and the next pre-step injects the updated index.
+
 ## Tools
 
 | Tool | Arguments | Behavior |
@@ -56,6 +76,7 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 - **One flat project scope.** There is no user-global memory and no path-scoped rule tree; the nearest `.git` ancestor defines the scope.
 - **No automatic curation.** Nothing consolidates, deduplicates, or expires notes. The agent writes them; a human or a future plugin manages them.
 - **No watcher.** The index is recomposed at the start of each turn, so an external edit becomes visible on the next turn, not immediately.
+- **The panel's delete confirmation is the browser's native `window.confirm`**, and the dialog does not trap Tab focus; Escape and the backdrop close it.
 - **`workspace-write` cannot write these files.** The store is written by the plugin, outside the sandboxed `ctx.fs` fence; the model's own `write`/`edit` tools cannot reach it, which is why `memory_write` exists.
 
 ## Verification
