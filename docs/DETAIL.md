@@ -5,7 +5,7 @@
 ## What it adds to a session
 
 - One injected context message per session (and again after compaction) containing the project's memory index, bounded by line and byte budgets.
-- Three model-facing tools: `memory_write`, `memory_read`, and `memory_search`.
+- Five model-facing tools: `memory_write`, `memory_read`, `memory_search`, `memory_delete`, and `memory_audit`.
 - No system-prompt section, no per-turn injection, and no extra model calls.
 - A write made in the current session does not re-inject the whole index: its tool result already carries the new index line. A change from outside the session, or a compaction that summarizes the old block away, still injects.
 - With the Client half installed, each injection renders as its own expandable Chat row ("Project memory · 1 saved") at group-tree position `turn`, instead of being folded into the Turn's process disclosure. The row claims the event exclusively, so the built-in context classifier never also sees it.
@@ -18,7 +18,8 @@ Each project gets a directory under the harness home:
 <DSH_HOME or ~/.dsh>/memory/<project-basename>-<root hash>/
 ├── MEMORY.md       # index: one line per memory
 ├── testing.md      # one memory per file
-└── release-flow.md
+├── release-flow.md
+└── archive/        # soft-deleted notes; never indexed or searched
 ```
 
 The project root is the nearest ancestor holding `.git`, matching how DSH scopes workspace instructions. Files are plain markdown and never appear in `git status`; edit or delete them by hand at any time, and the next session reconciles the index automatically.
@@ -50,8 +51,10 @@ of view, and the next pre-step injects the updated index.
 | `memory_write` | `title`, `content`, optional `file`, optional `summary` | Writes the note and upserts its index line atomically. Reusing the same file name updates that note. |
 | `memory_read` | `file` | Returns the note body, bounded by `maxTopicBytes`. |
 | `memory_search` | `query`, optional `limit` | Case-insensitive line search; every whitespace-separated term must appear on the same line. Returns file, line number, and text. |
+| `memory_delete` | `file`, optional `permanent` | Moves the note to `archive/` and drops its index line. `permanent: true` deletes the file instead. |
+| `memory_audit` | optional `staleDays`, `threshold`, `limit`, `verbose` | Read-only report: duplicate clusters (identical, near, same-title), stale notes, oversized notes, and index budget pressure. Near-duplicates are reported, never merged. |
 
-The index injection also tells the agent when saving is appropriate and that notes are reference material rather than instructions.
+The index injection also tells the agent when saving is appropriate and that notes are reference material rather than instructions. When the rendered index is over budget, it points at `memory_audit` and `memory_delete`. `memory_write` also returns up to three similar existing notes so duplicates can be caught at write time.
 
 ## Configuration
 
@@ -64,6 +67,10 @@ The index injection also tells the agent when saving is appropriate and that not
     maxTopicBytes: 65536
     maxSearchResults: 20
     maxSearchBytes: 4194304
+    staleDays: 90
+    duplicateThreshold: 0.6
+    oversizeBytes: 16384
+    maxAuditNotes: 200
 ```
 
 Every field is optional. The index defaults match Claude Code's `MEMORY.md` budget (200 lines or 25 KiB, whichever comes first); broader notes are dropped before the most recent ones.
@@ -74,7 +81,7 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 
 - **No semantic recall.** Search is literal, line-level matching. There are no embeddings and no model call.
 - **One flat project scope.** There is no user-global memory and no path-scoped rule tree; the nearest `.git` ancestor defines the scope.
-- **No automatic curation.** Nothing consolidates, deduplicates, or expires notes. The agent writes them; a human or a future plugin manages them.
+- **No automatic curation.** Manual `memory_audit` and soft-deleting `memory_delete` exist, and duplicate or budget pressure is reported, but nothing consolidates or expires notes on its own yet. Deterministic sweep/restore and the gated Auto Dream pass are planned in [CURATION.md](./CURATION.md).
 - **No watcher.** The index is recomposed at the start of each turn, so an external edit becomes visible on the next turn, not immediately.
 - **The panel's delete confirmation is the browser's native `window.confirm`**, and the dialog does not trap Tab focus; Escape and the backdrop close it.
 - **`workspace-write` cannot write these files.** The store is written by the plugin, outside the sandboxed `ctx.fs` fence; the model's own `write`/`edit` tools cannot reach it, which is why `memory_write` exists.
@@ -83,6 +90,6 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 
 Sources are TypeScript under `src/` and are built with tsdown into `lib/` (ESM host bundle plus the browser client factory). The package exports point at `lib/`, so run `npm run build` before installing or reloading the plugin from a checkout.
 
-`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, and the pre-step injection contract.
+`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, the store lock, soft delete and archiving, write-time similarity hints, audit duplicate/stale/oversized detection, and the pre-step injection contract.
 
 At runtime, create a memory in one session and ask for it in a new session; this is described in the repository README.

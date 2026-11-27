@@ -31,6 +31,16 @@ export interface MemoryEntry {
   file: string
   /** One-line index summary; empty when the note has no body line. */
   summary: string
+  /** Whether `MEMORY.md` names this file; a hand-added file is `false`. */
+  indexed?: boolean
+}
+
+/** One existing note that resembles a note being written. */
+export interface SimilarNote {
+  file: string
+  title: string
+  /** Normalized title/summary similarity in `[0, 1]`. */
+  score: number
 }
 
 /** One matching note line. */
@@ -47,6 +57,14 @@ export interface Settings {
   maxTopicBytes: number
   maxSearchResults: number
   maxSearchBytes: number
+  /** Notes older than this many days are reported as stale. */
+  staleDays: number
+  /** Title/summary similarity at or above which notes are reported as duplicates. */
+  duplicateThreshold: number
+  /** Notes at or above this byte size are reported as oversized. */
+  oversizeBytes: number
+  /** Upper bound on notes inspected by one audit. */
+  maxAuditNotes: number
   home: string
 }
 
@@ -73,11 +91,91 @@ export interface WriteMemoryInput {
   summary?: string
 }
 
+/** Optional limits for one write. */
+export interface WriteMemoryOptions {
+  /** Similarity at or above which a note is returned in `similar`. */
+  duplicateThreshold?: number
+}
+
 /** Result of one successful write. */
 export interface StoredMemory {
   entry: MemoryEntry
   path: string
   entries: MemoryEntry[]
+  /** Existing notes that resemble the written one. */
+  similar: SimilarNote[]
+}
+
+/** Why a note was archived. */
+export type ArchiveReason = 'manual' | 'duplicate' | 'empty' | 'overflow'
+
+/** Options for {@link deleteMemory}. */
+export interface DeleteMemoryOptions {
+  /** Remove the file instead of archiving it. Defaults to `false`. */
+  permanent?: boolean
+  /** Recorded reason for an archive (reserved for the manifest). */
+  reason?: ArchiveReason
+}
+
+/** Result of one delete. */
+export interface DeleteMemoryResult {
+  entries: MemoryEntry[]
+  /** Whether the file was moved under `archive/`. */
+  archived: boolean
+  /** Absolute archive path when `archived` is true. */
+  archivePath?: string
+}
+
+/** One note with filesystem metadata, used by the audit report. */
+export interface NoteInfo extends MemoryEntry {
+  bytes: number
+  lines: number
+  /** Filesystem modification time in epoch milliseconds. */
+  updatedAt: number
+}
+
+/** How two notes are related. */
+export type DuplicateKind = 'identical' | 'near' | 'same-title'
+
+/** One cluster of related notes. */
+export interface DuplicateGroup {
+  kind: DuplicateKind
+  score: number
+  files: string[]
+  titles: string[]
+}
+
+/** Options for {@link auditMemory}. */
+export interface AuditOptions {
+  staleDays: number
+  threshold: number
+  limit: number
+  verbose: boolean
+  maxNotes: number
+  maxIndexLines: number
+  maxIndexBytes: number
+  oversizeBytes: number
+}
+
+/** One audit report. */
+export interface AuditReport {
+  dir: string
+  projectRoot: string
+  notes: number
+  bytes: number
+  truncated: boolean
+  budget: {
+    maxLines: number
+    maxBytes: number
+    usedLines: number
+    usedBytes: number
+    omitted: number
+    overBudget: boolean
+  }
+  duplicates: DuplicateGroup[]
+  stale: Array<{ file: string; title: string; ageDays: number; bytes: number }>
+  oversized: Array<{ file: string; title: string; bytes: number; lines: number }>
+  notesList: NoteInfo[]
 }
 
 /** Result of one bounded read. */

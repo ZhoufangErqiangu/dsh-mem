@@ -133,13 +133,66 @@ test('searchMemory requires every term on one line and honours the limit', async
   assert.deepEqual(none.matches, [])
 })
 
-test('deleteMemory removes the note and its index line', async () => {
+test('deleteMemory archives the note and drops its index line', async () => {
   const dir = await memoryDirectory()
   await writeMemory(dir, { title: 'Temporary', content: 'Drop me.' })
-  const remaining = await deleteMemory(dir, 'temporary.md')
-  assert.deepEqual(remaining, [])
+  const removed = await deleteMemory(dir, 'temporary.md')
+  assert.equal(removed.archived, true)
+  assert.deepEqual(removed.entries, [])
+  assert.ok(removed.archivePath)
+  assert.match(await readFile(removed.archivePath, 'utf8'), /Drop me/u)
+  await assert.rejects(readFile(path.join(dir, 'temporary.md'), 'utf8'), /ENOENT/u)
   const index = await readFile(path.join(dir, 'MEMORY.md'), 'utf8')
   assert.doesNotMatch(index, /temporary/u)
+  const found = await searchMemory(dir, 'Drop me', { limit: 10, maxBytes: 1_000_000 })
+  assert.deepEqual(found.matches, [], 'archived notes are not searched')
+})
+
+test('deleteMemory permanent removes the file without an archive copy', async () => {
+  const dir = await memoryDirectory()
+  await writeMemory(dir, { title: 'Temporary', content: 'Drop me.' })
+  const removed = await deleteMemory(dir, 'temporary.md', { permanent: true })
+  assert.equal(removed.archived, false)
+  assert.equal(removed.archivePath, undefined)
+  assert.deepEqual(removed.entries, [])
+  await assert.rejects(readFile(path.join(dir, 'temporary.md'), 'utf8'), /ENOENT/u)
+})
+
+test('deleteMemory rejects an unknown note when archiving', async () => {
+  const dir = await memoryDirectory()
+  await assert.rejects(deleteMemory(dir, 'missing.md'), /ENOENT/u)
+})
+
+test('concurrent writes keep both index lines', async () => {
+  const dir = await memoryDirectory()
+  await Promise.all([
+    writeMemory(dir, { title: 'Alpha', content: '# Alpha\n\nFirst.' }),
+    writeMemory(dir, { title: 'Beta', content: '# Beta\n\nSecond.' }),
+  ])
+  const entries = await loadIndex(dir)
+  assert.deepEqual(entries.map(entry => entry.file).sort(), ['alpha.md', 'beta.md'])
+})
+
+test('writeMemory reports similar existing notes and excludes itself', async () => {
+  const dir = await memoryDirectory()
+  await writeMemory(dir, {
+    title: 'Testing conventions',
+    content: '# Testing conventions\n\nRun node --test before pushing.',
+  })
+  const second = await writeMemory(dir, {
+    title: 'Test conventions',
+    content: '# Test conventions\n\nRun node --test before pushing.',
+  })
+  assert.equal(second.similar.length, 1)
+  assert.equal(second.similar[0].file, 'testing-conventions.md')
+  assert.ok(second.similar[0].score >= 0.6)
+
+  const updated = await writeMemory(dir, {
+    title: 'Testing conventions',
+    content: '# Testing conventions\n\nUpdated body.',
+    file: 'testing-conventions.md',
+  })
+  assert.deepEqual(updated.similar, [], 'the note being updated is not its own duplicate')
 })
 
 test('renderIndex round-trips entries', () => {

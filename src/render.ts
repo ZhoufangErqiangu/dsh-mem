@@ -91,6 +91,7 @@ export function renderMemoryContext(input: RenderMemoryContextInput): string {
     lines.push(...bounded.lines)
     if (bounded.omitted > 0) {
       lines.push(`- … ${bounded.omitted} more ${bounded.omitted === 1 ? 'entry' : 'entries'} omitted from this index; use \`memory_search\` to find them.`)
+      lines.push('The index is over budget. Run `memory_audit`, then merge or `memory_delete` stale notes.')
     }
   }
   lines.push(CLOSE)

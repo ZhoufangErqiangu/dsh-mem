@@ -6,7 +6,7 @@
 
 - 每个项目一个记忆目录：`$DSH_HOME/memory/<项目名>-<路径哈希>/`
 - 每个会话（以及压缩后）注入一条带帧的上下文消息，内容是记忆索引 + 何时该记、何时不该记
-- 三个模型工具：`memory_write`（写笔记并原子维护索引行）、`memory_read`（有界读取）、`memory_search`（按行字面检索）
+- 五个模型工具：`memory_write`（写笔记并原子维护索引行，写入时提示相似笔记）、`memory_read`（有界读取）、`memory_search`（按行字面检索）、`memory_delete`（默认归档，可永久删除）、`memory_audit`（重复/过期/超长/预算报告）
 - 笔记是纯 markdown，可以手工编辑、删除、备份；不进仓库、不出现在 `git status`
 
 ## 目录结构
@@ -15,7 +15,8 @@
 memory/<项目名>-<root hash>/
 ├── MEMORY.md       # 索引：一行一条
 ├── testing.md      # 一条记忆一个文件
-└── release-flow.md
+├── release-flow.md
+└── archive/        # memory_delete 的软删除目录，不进入索引/搜索
 ```
 
 项目根按最近的 `.git` 祖先目录判定，和 DSH 的工作区指令作用域一致。索引每次会话开始时都会和目录对账：手工加的文件会被发现，手工删的文件其索引行会被丢弃。
@@ -40,7 +41,7 @@ npm run typecheck  # tsc --noEmit，检查 src/ 与 tests/
 npm test           # node --test tests/*.test.ts
 ```
 
-- `src/index.ts`、`src/paths.ts`、`src/render.ts`、`src/store.ts`：Host 半插件（工具、注入、面板路由）
+- `src/index.ts`、`src/paths.ts`、`src/render.ts`、`src/store.ts`、`src/audit.ts`、`src/lock.ts`、`src/similarity.ts`：Host 半插件（工具、注入、面板路由、审计、写锁、相似度）
 - `src/client/index.ts`、`src/client/contracts.ts`：Client 半插件（聊天行、`/memory` 面板）；`tsdown` 把入口包成 `window.__ModuleLoader__.load` 的 CJS 工厂，React 从页面模块表解析
 - `lib/` 是构建产物，不入库；安装包只包含 `lib/`，不含 `src/`
 
@@ -55,6 +56,10 @@ npm test           # node --test tests/*.test.ts
     maxTopicBytes: 65536      # memory_read 单次返回上限
     maxSearchResults: 20      # memory_search 默认返回条数
     maxSearchBytes: 4194304   # memory_search 扫描上限
+    staleDays: 90             # 超过多少天未更新的笔记算过期
+    duplicateThreshold: 0.6   # 标题/摘要相似度达到多少报告为近似重复
+    oversizeBytes: 16384      # 超过多少字节报告为超长
+    maxAuditNotes: 200        # 一次 memory_audit 最多检查多少篇
 ```
 
 ## 为什么写侧要自己实现
@@ -67,7 +72,9 @@ npm test           # node --test tests/*.test.ts
 npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断，以及 pre-step 注入契约。测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
+覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、相似提示、审计的重复/过期/超长判断，以及 pre-step 注入契约。当前 37 项。
+
+测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 
 ## 界面
 
@@ -80,7 +87,13 @@ Client 半插件提供两块：
 
 - 检索是字面匹配，没有向量/语义召回
 - 只有一个项目作用域，没有用户全局记忆和按路径生效的规则树
-- 没有自动整理/去重/过期机制
+- 已有手动审计（`memory_audit`）和软删除（`memory_delete`），但还没有自动整理/自动去重/过期清理
+- 近似重复只报告，不自动合并；只有正文完全相同的笔记会在后续清扫中被归档
+- 面板的删除目前仍是永久删除；agent 的 `memory_delete` 默认归档，面板会在 M2 改为归档
 - 索引在每轮开始时重组，外部编辑下一轮才可见
 
 更完整的行为说明见 `docs/DETAIL.md`。
+
+## 规划
+
+整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）已实现；清扫、面板整理和 Auto Dream 仍待实现。

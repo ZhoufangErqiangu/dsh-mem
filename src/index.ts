@@ -2,21 +2,25 @@
  * `@local/dsh-memory` — durable, file-based project memory for DSH agents.
  *
  * Each session receives the project's `MEMORY.md` index as one injected context
- * message, and three tools maintain the store: `memory_write`, `memory_read`, and
- * `memory_search`. Files live under `<harness home>/memory/<project key>/` as plain
- * markdown, so they are inspectable, editable, and never mixed into the repository.
+ * message, and five tools maintain the store: `memory_write`, `memory_read`,
+ * `memory_search`, `memory_delete`, and `memory_audit`. Files live under
+ * `<harness home>/memory/<project key>/` as plain markdown, so they are
+ * inspectable, editable, and never mixed into the repository.
  *
  * @module @local/dsh-memory
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { auditMemory } from './audit.ts'
 import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './store.ts'
 import { dshHome, findProjectRoot, memoryDir } from './paths.ts'
 import { renderEntry, renderMemoryContext } from './render.ts'
 import type {
   Agent,
+  AuditReport,
   Context,
   ContentBlock,
+  DeleteMemoryResult,
   MemoryEntry,
   MemoryMatch,
   MemoryMessageSource,
@@ -26,6 +30,7 @@ import type {
   Session,
   SessionId,
   Settings,
+  SimilarNote,
   StoredMemory,
   ToolDefinition,
   ToolRunContext,
@@ -43,6 +48,10 @@ const DEFAULT_MAX_INDEX_BYTES = 25_000
 const DEFAULT_MAX_TOPIC_BYTES = 65_536
 const DEFAULT_MAX_SEARCH_RESULTS = 20
 const DEFAULT_MAX_SEARCH_BYTES = 4 * 1024 * 1024
+const DEFAULT_STALE_DAYS = 90
+const DEFAULT_DUPLICATE_THRESHOLD = 0.6
+const DEFAULT_OVERSIZE_BYTES = 16_384
+const DEFAULT_MAX_AUDIT_NOTES = 200
 
 /** Canonical value of one successful `memory_write`. */
 export interface MemoryWriteOutput {
@@ -50,6 +59,7 @@ export interface MemoryWriteOutput {
   path: string
   line: string
   entries: number
+  similar: SimilarNote[]
 }
 
 /** Canonical value of one `memory_read`. */
@@ -61,6 +71,17 @@ export interface MemorySearchOutput {
   truncated: boolean
 }
 
+/** Canonical value of one `memory_delete`. */
+export interface MemoryDeleteOutput {
+  file: string
+  archived: boolean
+  archivePath: string
+  entries: number
+}
+
+/** Canonical value of one `memory_audit`. */
+export type MemoryAuditOutput = AuditReport
+
 /** Narrow untrusted tool arguments to a string-keyed record. */
 function recordOf(args: unknown): Record<string, unknown> {
   return args !== null && typeof args === 'object' ? args as Record<string, unknown> : {}
@@ -71,8 +92,18 @@ function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+/** Read the errno code of a thrown filesystem error. */
+function errorCode(error: unknown): string | undefined {
+  return error !== null && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : undefined
+}
+
 function boundedInteger(value: unknown, fallback: number, minimum: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= minimum ? value : fallback
+}
+
+/** Read one optional number inside a closed range. */
+function boundedNumber(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback
 }
 
 function normalizeSettings(config?: unknown): Settings {
@@ -83,6 +114,10 @@ function normalizeSettings(config?: unknown): Settings {
     maxTopicBytes: boundedInteger(row.maxTopicBytes, DEFAULT_MAX_TOPIC_BYTES, 256),
     maxSearchResults: boundedInteger(row.maxSearchResults, DEFAULT_MAX_SEARCH_RESULTS, 1),
     maxSearchBytes: boundedInteger(row.maxSearchBytes, DEFAULT_MAX_SEARCH_BYTES, 1024),
+    staleDays: boundedInteger(row.staleDays, DEFAULT_STALE_DAYS, 1),
+    duplicateThreshold: boundedNumber(row.duplicateThreshold, DEFAULT_DUPLICATE_THRESHOLD, 0.3, 0.95),
+    oversizeBytes: boundedInteger(row.oversizeBytes, DEFAULT_OVERSIZE_BYTES, 1024),
+    maxAuditNotes: Math.min(boundedInteger(row.maxAuditNotes, DEFAULT_MAX_AUDIT_NOTES, 1), 1000),
     home: dshHome(),
   }
 }
@@ -202,20 +237,34 @@ export function apply(ctx: Context, config?: unknown): void {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['file', 'path', 'line', 'entries'],
+        required: ['file', 'path', 'line', 'entries', 'similar'],
         properties: {
           file: { type: 'string' },
           path: { type: 'string' },
           line: { type: 'string' },
           entries: { type: 'integer' },
+          similar: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'title', 'score'],
+              properties: {
+                file: { type: 'string' },
+                title: { type: 'string' },
+                score: { type: 'number' },
+              },
+            },
+          },
         },
       },
       render: (_args, value) => {
         const output = value as unknown as MemoryWriteOutput
-        return [{
-          type: 'text',
-          text: `Saved ${output.file} (${output.entries} memories indexed, under ${output.path}).\n${output.line}`,
-        }]
+        const lines = [`Saved ${output.file} (${output.entries} memories indexed, under ${output.path}).`, output.line]
+        if (Array.isArray(output.similar) && output.similar.length > 0) {
+          lines.push(`Similar existing notes: ${output.similar.map(note => `${note.file} (${Math.round(note.score * 100)}%)`).join(', ')}. Consider merging instead of adding a new note.`)
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
       },
     },
     async execute(args: unknown, exec: ToolRunContext) {
@@ -229,7 +278,7 @@ export function apply(ctx: Context, config?: unknown): void {
         content: stringOf(row.content) ?? '',
         ...(file === undefined ? {} : { file }),
         ...(summary === undefined ? {} : { summary }),
-      })
+      }, { duplicateThreshold: settings.duplicateThreshold })
       // The write is the only change this session knows about; the tool result
       // already names the new index line, so the next step need not repeat the
       // whole index. An outside change still differs from this digest.
@@ -239,6 +288,7 @@ export function apply(ctx: Context, config?: unknown): void {
         path: stored.path,
         line: renderEntry(stored.entry),
         entries: stored.entries.length,
+        similar: stored.similar,
       } satisfies MemoryWriteOutput
     },
   }
@@ -352,9 +402,232 @@ export function apply(ctx: Context, config?: unknown): void {
     },
   }
 
+  const deleteTool: ToolDefinition = {
+    name: 'memory_delete',
+    description: 'Remove one note from this project\'s memory. By default the file is archived under the memory directory and can be recovered; pass permanent: true only when the note is certainly unwanted. Use memory_audit first to find stale or duplicate notes.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          description: 'Topic file name from an index line, such as `testing-conventions.md`.',
+        },
+        permanent: {
+          type: 'boolean',
+          description: 'Delete the file instead of archiving it. Defaults to false.',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['file', 'archived', 'archivePath', 'entries'],
+        properties: {
+          file: { type: 'string' },
+          archived: { type: 'boolean' },
+          archivePath: { type: 'string' },
+          entries: { type: 'integer' },
+        },
+      },
+      render: (_args, value) => {
+        const output = value as unknown as MemoryDeleteOutput
+        const text = output.archived
+          ? `Archived ${output.file} to ${output.archivePath} (${output.entries} memories remain). Move it back to restore it.`
+          : `Deleted ${output.file} permanently (${output.entries} memories remain).`
+        return [{ type: 'text', text }]
+      },
+    },
+    async execute(args: unknown, exec: ToolRunContext) {
+      if (exec.agent === undefined) throw new Error('memory_delete requires an agent session')
+      const row = recordOf(args)
+      const file = String(row.file ?? '')
+      const project = await projectFor(exec.agent, exec.signal)
+      try {
+        const removed: DeleteMemoryResult = await deleteMemory(project.memoryDir, file, { permanent: row.permanent === true })
+        return {
+          file,
+          archived: removed.archived,
+          archivePath: removed.archivePath ?? '',
+          entries: removed.entries.length,
+        } satisfies MemoryDeleteOutput
+      }
+      catch (error) {
+        if (errorCode(error) === 'ENOENT') {
+          throw new Error(`no memory file named ${file} in ${project.memoryDir}; use memory_search to find one.`)
+        }
+        throw error
+      }
+    },
+  }
+
+  const auditTool: ToolDefinition = {
+    name: 'memory_audit',
+    description: 'Report this project memory\'s health: duplicate clusters, stale notes, oversized notes, and index budget pressure. Read-only. Use it before merging, archiving, or deleting notes; near-duplicates are reported but never merged automatically.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        staleDays: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 3650,
+          description: `Notes older than this many days are stale; defaults to ${DEFAULT_STALE_DAYS}.`,
+        },
+        threshold: {
+          type: 'number',
+          minimum: 0.3,
+          maximum: 0.95,
+          description: `Similarity at or above which notes are reported as near-duplicates; defaults to ${DEFAULT_DUPLICATE_THRESHOLD}.`,
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description: 'Maximum entries per category; defaults to 10.',
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'Include the per-note list (bounded by maxAuditNotes). Defaults to false.',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['dir', 'projectRoot', 'notes', 'bytes', 'truncated', 'budget', 'duplicates', 'stale', 'oversized', 'notesList'],
+        properties: {
+          dir: { type: 'string' },
+          projectRoot: { type: 'string' },
+          notes: { type: 'integer' },
+          bytes: { type: 'integer' },
+          truncated: { type: 'boolean' },
+          budget: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['maxLines', 'maxBytes', 'usedLines', 'usedBytes', 'omitted', 'overBudget'],
+            properties: {
+              maxLines: { type: 'integer' },
+              maxBytes: { type: 'integer' },
+              usedLines: { type: 'integer' },
+              usedBytes: { type: 'integer' },
+              omitted: { type: 'integer' },
+              overBudget: { type: 'boolean' },
+            },
+          },
+          duplicates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['kind', 'score', 'files', 'titles'],
+              properties: {
+                kind: { type: 'string', enum: ['identical', 'near', 'same-title'] },
+                score: { type: 'number' },
+                files: { type: 'array', items: { type: 'string' } },
+                titles: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+          stale: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'title', 'ageDays', 'bytes'],
+              properties: {
+                file: { type: 'string' },
+                title: { type: 'string' },
+                ageDays: { type: 'integer' },
+                bytes: { type: 'integer' },
+              },
+            },
+          },
+          oversized: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'title', 'bytes', 'lines'],
+              properties: {
+                file: { type: 'string' },
+                title: { type: 'string' },
+                bytes: { type: 'integer' },
+                lines: { type: 'integer' },
+              },
+            },
+          },
+          notesList: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'title', 'summary', 'bytes', 'lines', 'updatedAt', 'indexed'],
+              properties: {
+                file: { type: 'string' },
+                title: { type: 'string' },
+                summary: { type: 'string' },
+                bytes: { type: 'integer' },
+                lines: { type: 'integer' },
+                updatedAt: { type: 'number' },
+                indexed: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        const output = value as unknown as MemoryAuditOutput
+        const budget = output.budget
+        const lines = [
+          `${output.notes} notes, ${output.bytes} bytes. Index: ${budget.usedLines}/${budget.maxLines} lines, ${budget.usedBytes}/${budget.maxBytes} bytes${budget.overBudget ? ' (over budget)' : ''}.`,
+        ]
+        if (output.duplicates.length > 0) {
+          lines.push('Duplicates:')
+          for (const group of output.duplicates) {
+            lines.push(`- ${group.kind} (${Math.round(group.score * 100)}%): ${group.files.join(', ')}`)
+          }
+        }
+        if (output.stale.length > 0) {
+          lines.push('Stale:')
+          for (const note of output.stale) lines.push(`- ${note.file} (${note.ageDays} days old)`)
+        }
+        if (output.oversized.length > 0) {
+          lines.push('Oversized:')
+          for (const note of output.oversized) lines.push(`- ${note.file} (${note.bytes} bytes, ${note.lines} lines)`)
+        }
+        if (output.duplicates.length === 0 && output.stale.length === 0 && output.oversized.length === 0) {
+          lines.push('No duplicate, stale, or oversized notes found.')
+        }
+        if (output.truncated) lines.push('Report truncated; raise limit or maxAuditNotes to inspect more.')
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    async execute(args: unknown, exec: ToolRunContext) {
+      if (exec.agent === undefined) throw new Error('memory_audit requires an agent session')
+      const row = recordOf(args)
+      const project = await projectFor(exec.agent, exec.signal)
+      return auditMemory(project.memoryDir, project.projectRoot, {
+        staleDays: Math.min(3650, boundedInteger(row.staleDays, settings.staleDays, 1)),
+        threshold: boundedNumber(row.threshold, settings.duplicateThreshold, 0.3, 0.95),
+        limit: Math.min(50, boundedInteger(row.limit, 10, 1)),
+        verbose: row.verbose === true,
+        maxNotes: settings.maxAuditNotes,
+        maxIndexLines: settings.maxIndexLines,
+        maxIndexBytes: settings.maxIndexBytes,
+        oversizeBytes: settings.oversizeBytes,
+      })
+    },
+  }
+
   ctx.effect(() => ctx.tools.register(writeTool))
   ctx.effect(() => ctx.tools.register(readTool))
   ctx.effect(() => ctx.tools.register(searchTool))
+  ctx.effect(() => ctx.tools.register(deleteTool))
+  ctx.effect(() => ctx.tools.register(auditTool))
 
   // The Web UI panel reaches the same store through one owner-only exact route.
   // Tools and the panel therefore share one implementation of every operation.
@@ -399,8 +672,12 @@ export function apply(ctx: Context, config?: unknown): void {
               value: { entry: stored.entry, entries: stored.entries, line: renderEntry(stored.entry) },
             })
           }
-          case 'delete':
-            return reply({ ok: true, value: { entries: await deleteMemory(dir, String(row.file ?? '')) } })
+          case 'delete': {
+            // The panel's delete is an explicit human confirmation, so it keeps
+            // the historical hard-delete behavior until M2 adds an archive view.
+            const removed = await deleteMemory(dir, String(row.file ?? ''), { permanent: true })
+            return reply({ ok: true, value: { entries: removed.entries } })
+          }
           default:
             return failure('bad-action', 'unknown action; expected list, read, save, or delete', 400)
         }

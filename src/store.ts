@@ -13,7 +13,12 @@ import { existsSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { INDEX_FILE, assertContained, isTopicFileName } from './paths.ts'
+import { withStoreLock } from './lock.ts'
+import { similarEntries } from './similarity.ts'
 import type {
+  ArchiveReason,
+  DeleteMemoryOptions,
+  DeleteMemoryResult,
   MemoryEntry,
   MemoryMatch,
   ReadMemoryResult,
@@ -21,6 +26,7 @@ import type {
   SearchResult,
   StoredMemory,
   WriteMemoryInput,
+  WriteMemoryOptions,
 } from './types.ts'
 
 /** One index line: `- [Title](file.md) — summary`. */
@@ -31,6 +37,12 @@ const SUMMARY_MAX_CHARS = 160
 
 /** Bound for the head of a file inspected to derive an index line. */
 const HEAD_BYTES = 4096
+
+/** Subdirectory holding soft-deleted notes. */
+export const ARCHIVE_DIR = 'archive'
+
+/** Default title/summary similarity for write-time duplicate hints. */
+const DEFAULT_DUPLICATE_THRESHOLD = 0.6
 
 /** Whether a thrown value is a filesystem error with one exact code. */
 function hasErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -133,13 +145,13 @@ export async function loadIndex(dir: string): Promise<MemoryEntry[]> {
       if (!isTopicFileName(file) || seen.has(file)) continue
       if (!existsSync(path.join(dir, file))) continue
       seen.add(file)
-      entries.push({ title: match[1].trim() || file.replace(/\.md$/u, ''), file, summary: oneLine(match[3] ?? '') })
+      entries.push({ title: match[1].trim() || file.replace(/\.md$/u, ''), file, summary: oneLine(match[3] ?? ''), indexed: true })
     }
   }
   for (const file of await listTopicFiles(dir)) {
     if (seen.has(file)) continue
     const head = await readHead(path.join(dir, file))
-    entries.push({ title: titleFromHead(head, file), file, summary: summaryFromHead(head) })
+    entries.push({ title: titleFromHead(head, file), file, summary: summaryFromHead(head), indexed: false })
   }
   return entries
 }
@@ -206,11 +218,20 @@ async function atomicWrite(file: string, text: string): Promise<void> {
 
 /**
  * Write one memory and keep its index line in sync.
+ *
+ * The whole index update runs under the store lock, so two sessions writing at
+ * the same time cannot both read the old index and then overwrite each other's
+ * line.
  * @param dir - absolute memory directory.
  * @param input - title, body, and optional file or summary.
- * @returns the stored entry, its complete path, and the remaining entries.
+ * @param options - optional duplicate-hint threshold.
+ * @returns the stored entry, its path, the entries, and similar notes.
  */
-export async function writeMemory(dir: string, input: WriteMemoryInput): Promise<StoredMemory> {
+export async function writeMemory(
+  dir: string,
+  input: WriteMemoryInput,
+  options: WriteMemoryOptions = {},
+): Promise<StoredMemory> {
   const title = oneLine(input.title)
   if (title.length === 0) throw new Error('memory_write requires a non-empty title')
   const body = String(input.content ?? '')
@@ -226,34 +247,72 @@ export async function writeMemory(dir: string, input: WriteMemoryInput): Promise
     ? clampSummary(input.summary)
     : summaryFromHead(body)
   const text = body.trimStart().startsWith('#') ? ensureTrailingNewline(body) : `# ${title}\n\n${ensureTrailingNewline(body)}`
-  await mkdir(dir, { recursive: true })
-  await atomicWrite(target, text)
-  const entries = await loadIndex(dir)
-  const entry: MemoryEntry = { title, file, summary }
-  const position = entries.findIndex(candidate => candidate.file === file)
-  if (position >= 0) entries[position] = entry
-  else entries.unshift(entry)
-  await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
-  return { entry, path: target, entries }
+  return withStoreLock(dir, async () => {
+    await mkdir(dir, { recursive: true })
+    await atomicWrite(target, text)
+    const entries = await loadIndex(dir)
+    const entry: MemoryEntry = { title, file, summary, indexed: true }
+    const position = entries.findIndex(candidate => candidate.file === file)
+    if (position >= 0) entries[position] = entry
+    else entries.unshift(entry)
+    await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    const similar = similarEntries(entries, file, options.duplicateThreshold ?? DEFAULT_DUPLICATE_THRESHOLD)
+    return { entry, path: target, entries, similar }
+  })
 }
 
 function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`
 }
 
+/** Build a collision-resistant archive file name. */
+function archiveName(file: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z')
+  const base = file.slice(0, -3)
+    .replace(/[^\p{Letter}\p{Number}._-]+/gu, '-')
+    .slice(0, 64)
+  const suffix = randomUUID().replace(/-/gu, '').slice(0, 4)
+  return `${stamp}-${base}-${suffix}.md`
+}
+
+/** Move one note into `archive/` and return its absolute path. */
+async function archiveLocked(dir: string, file: string, _reason: ArchiveReason): Promise<string> {
+  const archiveDir = path.join(dir, ARCHIVE_DIR)
+  await mkdir(archiveDir, { recursive: true })
+  const archivePath = assertContained(dir, path.join(ARCHIVE_DIR, archiveName(file)))
+  await rename(assertContained(dir, file), archivePath)
+  return archivePath
+}
+
 /**
  * Delete one memory and its index line.
+ *
+ * The default is a soft delete: the note moves to `archive/` and can be
+ * restored by moving it back. Pass `permanent: true` to remove the file.
  * @param dir - absolute memory directory.
  * @param file - flat topic file name.
- * @returns the remaining entries.
+ * @param options - permanent flag and archive reason.
+ * @returns the remaining entries and whether the note was archived.
  */
-export async function deleteMemory(dir: string, file: string): Promise<MemoryEntry[]> {
+export async function deleteMemory(
+  dir: string,
+  file: string,
+  options: DeleteMemoryOptions = {},
+): Promise<DeleteMemoryResult> {
   if (!isTopicFileName(file)) throw new Error(`invalid memory file name: ${file}`)
-  const target = assertContained(dir, file)
-  await rm(target, { force: true })
-  const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
-  await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
-  return entries
+  return withStoreLock(dir, async () => {
+    const target = assertContained(dir, file)
+    if (options.permanent === true) {
+      await rm(target, { force: true })
+      const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
+      await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+      return { entries, archived: false }
+    }
+    const archivePath = await archiveLocked(dir, file, options.reason ?? 'manual')
+    const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
+    await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    return { entries, archived: true, archivePath }
+  })
 }
 
 /**

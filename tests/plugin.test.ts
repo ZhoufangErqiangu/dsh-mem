@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -8,7 +8,7 @@ import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 
 import { apply, name } from '../src/index.ts'
-import type { MemoryWriteOutput } from '../src/index.ts'
+import type { MemoryAuditOutput, MemoryDeleteOutput, MemoryWriteOutput } from '../src/index.ts'
 import type {
   Agent,
   Context,
@@ -141,13 +141,108 @@ function sourceOf(message: UserMessage): MemoryMessageSource {
   return message.source
 }
 
-test('apply registers the three memory tools', async () => {
+test('apply registers the five memory tools', async () => {
   const root = await workspace()
   const home = path.join(root, 'home')
   const runtime = fakeRuntime(root, home)
   try {
     apply(runtime.ctx, {})
-    assert.deepEqual([...runtime.tools.keys()].sort(), ['memory_read', 'memory_search', 'memory_write'])
+    assert.deepEqual([...runtime.tools.keys()].sort(), [
+      'memory_audit',
+      'memory_delete',
+      'memory_read',
+      'memory_search',
+      'memory_write',
+    ])
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('memory_delete archives by default and supports permanent deletion', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const remove = runtime.tools.get('memory_delete')
+    assert.ok(write)
+    assert.ok(remove)
+
+    const first = await write.execute(
+      { title: 'Scratch', content: '# Scratch\n\nArchive me.' },
+      toolContext(makeAgent()),
+    ) as MemoryWriteOutput
+    const archived = await remove.execute({ file: first.file }, toolContext(makeAgent())) as MemoryDeleteOutput
+    assert.equal(archived.archived, true)
+    assert.ok(archived.archivePath)
+    assert.match(await readFile(archived.archivePath, 'utf8'), /Archive me/u)
+    await assert.rejects(readFile(first.path, 'utf8'), /ENOENT/u)
+
+    const second = await write.execute(
+      { title: 'Gone', content: '# Gone\n\nDelete me.' },
+      toolContext(makeAgent()),
+    ) as MemoryWriteOutput
+    const deleted = await remove.execute({ file: second.file, permanent: true }, toolContext(makeAgent())) as MemoryDeleteOutput
+    assert.equal(deleted.archived, false)
+    assert.equal(deleted.archivePath, '')
+    await assert.rejects(readFile(second.path, 'utf8'), /ENOENT/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('memory_write hints at a similar note and memory_audit reports the cluster', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const audit = runtime.tools.get('memory_audit')
+    assert.ok(write)
+    assert.ok(audit)
+
+    await write.execute(
+      { title: 'Testing conventions', content: '# Testing conventions\n\nRun node --test before pushing.' },
+      toolContext(makeAgent()),
+    )
+    const second = await write.execute(
+      { title: 'Test conventions', content: '# Test conventions\n\nRun node --test before pushing.' },
+      toolContext(makeAgent()),
+    ) as MemoryWriteOutput
+    assert.equal(second.similar.length, 1)
+    assert.equal(second.similar[0].file, 'testing-conventions.md')
+
+    const report = await audit.execute({ threshold: 0.5, limit: 5 }, toolContext(makeAgent())) as MemoryAuditOutput
+    assert.ok(report.duplicates.length >= 1)
+    assert.ok(report.duplicates.some(group => group.files.includes('testing-conventions.md') && group.files.includes('test-conventions.md')))
+    assert.equal(report.budget.overBudget, false)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('an over-budget injection points at the audit and delete tools', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, { maxIndexLines: 1 })
+    const write = runtime.tools.get('memory_write')
+    assert.ok(write)
+    const writer = makeAgent()
+    await write.execute({ title: 'One', content: '# One\n\nFirst.' }, toolContext(writer))
+    await write.execute({ title: 'Two', content: '# Two\n\nSecond.' }, toolContext(writer))
+    const handler = preStepHandler(runtime)
+    const injected = messagesOf(await handler(payload(makeAgent()), enterWithPrompt))
+    assert.match(textOf(injected[1]), /over budget/u)
+    assert.match(textOf(injected[1]), /memory_audit/u)
+    assert.match(textOf(injected[1]), /memory_delete/u)
   }
   finally {
     runtime.restore()
