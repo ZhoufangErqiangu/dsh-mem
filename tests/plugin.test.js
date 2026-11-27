@@ -135,6 +135,7 @@ test('memory_write then a later turn recalls the saved note', async () => {
     assert.equal(injected.messages.length, 2)
     assert.match(injected.messages[1].content[0].text, /release-flow\.md/u)
     assert.match(injected.messages[1].content[0].text, /1 note saved/u)
+    assert.equal(injected.messages[1].source.entryCount, 1)
   }
   finally {
     runtime.restore()

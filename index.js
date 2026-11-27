@@ -79,6 +79,7 @@ function createMemoryMessage(text, details) {
       memoryDigest: details.digest,
       projectRoot: details.projectRoot,
       memoryDir: details.memoryDir,
+      entryCount: details.entries.length,
     },
   }
 }

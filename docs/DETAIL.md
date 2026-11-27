@@ -8,6 +8,7 @@
 - Three model-facing tools: `memory_write`, `memory_read`, and `memory_search`.
 - No system-prompt section, no per-turn injection, and no extra model calls.
 - A write made in the current session does not re-inject the whole index: its tool result already carries the new index line. A change from outside the session, or a compaction that summarizes the old block away, still injects.
+- With the Client half installed, each injection renders as its own expandable Chat row ("Project memory · 1 saved") at group-tree position `turn`, instead of being folded into the Turn's process disclosure. The row claims the event exclusively, so the built-in context classifier never also sees it.
 
 ## Where memories live
 
