@@ -7,6 +7,7 @@
 - One injected context message per session (and again after compaction) containing the project's memory index, bounded by line and byte budgets.
 - Three model-facing tools: `memory_write`, `memory_read`, and `memory_search`.
 - No system-prompt section, no per-turn injection, and no extra model calls.
+- A write made in the current session does not re-inject the whole index: its tool result already carries the new index line. A change from outside the session, or a compaction that summarizes the old block away, still injects.
 
 ## Where memories live
 

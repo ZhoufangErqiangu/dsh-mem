@@ -140,3 +140,85 @@ test('memory_write then a later turn recalls the saved note', async () => {
     runtime.restore()
   }
 })
+
+test('a write in this session does not re-inject the whole index', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = runtime.listeners.get('agent/pre-step')
+    const next = async () => ({ kind: 'messages', messages: [{ id: 'prompt' }] })
+    const agent = { session: session() }
+
+    const baseline = await handler(payload(agent, 1, 1), next)
+    assert.equal(baseline.messages.length, 2)
+
+    await runtime.tools.get('memory_write').execute(
+      { title: 'Orbit', content: '# Orbit\n\nAlways file under orbit.' },
+      { agent, signal: new AbortController().signal },
+    )
+    const nextStep = await handler(payload(agent, 1, 2), next)
+    assert.equal(nextStep.messages.length, 1, 'own write is acknowledged, not injected')
+    const nextTurn = await handler(payload(agent, 2, 1), next)
+    assert.equal(nextTurn.messages.length, 1, 'the acknowledgement survives into later turns')
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('an outside change still injects after an acknowledgement', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = runtime.listeners.get('agent/pre-step')
+    const next = async () => ({ kind: 'messages', messages: [{ id: 'prompt' }] })
+    const agent = { session: session() }
+    await handler(payload(agent, 1, 1), next)
+    await runtime.tools.get('memory_write').execute(
+      { title: 'Orbit', content: '# Orbit\n\nAlways file under orbit.' },
+      { agent, signal: new AbortController().signal },
+    )
+    assert.equal((await handler(payload(agent, 2, 1), next)).messages.length, 1)
+
+    const other = { session: session() }
+    await runtime.tools.get('memory_write').execute(
+      { title: 'Rings', content: '# Rings\n\nRings are render-only.' },
+      { agent: other, signal: new AbortController().signal },
+    )
+    const changed = await handler(payload(agent, 3, 1), next)
+    assert.equal(changed.messages.length, 2)
+    assert.match(changed.messages[1].content[0].text, /rings\.md/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('compaction invalidates the acknowledgement', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = runtime.listeners.get('agent/pre-step')
+    const next = async () => ({ kind: 'messages', messages: [{ id: 'prompt' }] })
+    const agent = { session: session() }
+    await handler(payload(agent, 1, 1), next)
+    await runtime.tools.get('memory_write').execute(
+      { title: 'Orbit', content: '# Orbit\n\nAlways file under orbit.' },
+      { agent, signal: new AbortController().signal },
+    )
+    assert.equal((await handler(payload(agent, 2, 1), next)).messages.length, 1)
+
+    runtime.listeners.get('agent/created')({ agent, source: { kind: 'compaction' } })
+    const afterCompaction = await handler(payload(agent, 3, 1), next)
+    assert.equal(afterCompaction.messages.length, 2, 'the index returns after its history is summarized away')
+  }
+  finally {
+    runtime.restore()
+  }
+})

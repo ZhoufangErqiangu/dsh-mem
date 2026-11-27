@@ -92,6 +92,12 @@ export function apply(ctx, config) {
   const settings = normalizeSettings(config)
   /** Digest of the context already delivered to a session, keyed by session. */
   const delivered = new WeakMap()
+  /**
+   * Digest the session already knows without an injection: either it was just
+   * injected or the model wrote it. Own writes must not re-inject the whole
+   * index, because the tool result already carries the updated index line.
+   */
+  const acknowledged = new WeakMap()
 
   /** Resolve the project and its memory directory for one agent. */
   const projectFor = async (agent, signal) => {
@@ -100,16 +106,20 @@ export function apply(ctx, config) {
     return { projectRoot, memoryDir: memoryDir(projectRoot, settings.home) }
   }
 
-  const contextFor = async (agent, signal) => {
-    const project = await projectFor(agent, signal)
-    const entries = await loadIndex(project.memoryDir)
+  const renderFor = (projectRoot, entries) => {
     const text = renderMemoryContext({
-      projectRoot: project.projectRoot,
+      projectRoot,
       entries,
       maxIndexLines: settings.maxIndexLines,
       maxIndexBytes: settings.maxIndexBytes,
     })
-    return { ...project, entries, text, digest: digestOf(text) }
+    return { entries, text, digest: digestOf(text) }
+  }
+
+  const contextFor = async (agent, signal) => {
+    const project = await projectFor(agent, signal)
+    const entries = await loadIndex(project.memoryDir)
+    return { ...project, ...renderFor(project.projectRoot, entries) }
   }
 
   ctx.effect(() => ctx.tools.register({
@@ -164,6 +174,10 @@ export function apply(ctx, config) {
         ...typeof args.file === 'string' ? { file: args.file } : {},
         ...typeof args.summary === 'string' ? { summary: args.summary } : {},
       })
+      // The write is the only change this session knows about; the tool result
+      // already names the new index line, so the next step need not repeat the
+      // whole index. An outside change still differs from this digest.
+      acknowledged.set(exec.agent.session, renderFor(project.projectRoot, stored.entries).digest)
       return {
         file: stored.entry.file,
         path: stored.path,
@@ -277,9 +291,11 @@ export function apply(ctx, config) {
   }))
 
   // A new agent session object starts with nothing delivered; a resumed,
-  // cleared, or compacted session must reconcile against visible history again.
+  // cleared, or compacted session must reconcile against visible history again
+  // and cannot rely on a write acknowledgement whose tool result is gone.
   ctx.on('agent/created', ({ agent }) => {
     delivered.delete(agent.session)
+    acknowledged.delete(agent.session)
   })
 
   ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
@@ -300,8 +316,12 @@ export function apply(ctx, config) {
     // History is authoritative at the start of every turn, so an interrupted
     // injection is retried instead of being treated as delivered.
     const current = record?.turn === turn ? record.digest : visibleMemoryDigest(agent)
+    const ack = acknowledged.get(agent.session)
+    // An acknowledgement covers exactly the state it was recorded for; any later
+    // change, including an edit from outside this session, falls back to injection.
+    if (ack !== undefined && ack !== context.digest) acknowledged.delete(agent.session)
     delivered.set(agent.session, { digest: context.digest, turn })
-    if (current === context.digest) return decision
+    if (current === context.digest || ack === context.digest) return decision
     return {
       ...decision,
       messages: [
