@@ -12,7 +12,16 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { INDEX_FILE, assertContained, isTopicFileName } from './paths.js'
+import { INDEX_FILE, assertContained, isTopicFileName } from './paths.ts'
+import type {
+  MemoryEntry,
+  MemoryMatch,
+  ReadMemoryResult,
+  SearchOptions,
+  SearchResult,
+  StoredMemory,
+  WriteMemoryInput,
+} from './types.ts'
 
 /** One index line: `- [Title](file.md) — summary`. */
 const ENTRY_PATTERN = /^\s*[-*]\s+\[([^\]]*)\]\(([^)\s]+)\)(?:\s+[—–-]\s*(.*))?$/
@@ -23,17 +32,22 @@ const SUMMARY_MAX_CHARS = 160
 /** Bound for the head of a file inspected to derive an index line. */
 const HEAD_BYTES = 4096
 
-async function readTextIfExists(file) {
+/** Whether a thrown value is a filesystem error with one exact code. */
+function hasErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return error !== null && typeof error === 'object' && (error as NodeJS.ErrnoException).code === code
+}
+
+async function readTextIfExists(file: string): Promise<string | undefined> {
   try {
     return await readFile(file, 'utf8')
   }
   catch (error) {
-    if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return undefined
+    if (hasErrnoCode(error, 'ENOENT')) return undefined
     throw error
   }
 }
 
-async function listTopicFiles(dir) {
+async function listTopicFiles(dir: string): Promise<string[]> {
   try {
     const entries = await readdir(dir, { withFileTypes: true })
     return entries
@@ -42,16 +56,17 @@ async function listTopicFiles(dir) {
       .sort()
   }
   catch (error) {
-    if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return []
+    if (hasErrnoCode(error, 'ENOENT')) return []
     throw error
   }
 }
 
-function oneLine(text) {
+/** Collapse arbitrary text into one line. */
+function oneLine(text: unknown): string {
   return String(text).replace(/\s+/gu, ' ').trim()
 }
 
-function clampSummary(text) {
+function clampSummary(text: unknown): string {
   const line = oneLine(text)
   return line.length <= SUMMARY_MAX_CHARS ? line : `${line.slice(0, SUMMARY_MAX_CHARS - 1)}…`
 }
@@ -62,7 +77,7 @@ function clampSummary(text) {
  * @param fileName - fallback name.
  * @returns the heading text, or the file name without its extension.
  */
-function titleFromHead(head, fileName) {
+function titleFromHead(head: string, fileName: string): string {
   for (const line of head.split(/\r?\n/u)) {
     const match = /^#\s+(.+)$/u.exec(line.trim())
     if (match !== null && match[1].trim().length > 0) return clampSummary(match[1])
@@ -75,7 +90,7 @@ function titleFromHead(head, fileName) {
  * @param head - first bytes of the note.
  * @returns the first body line, stripped of markdown.
  */
-function summaryFromHead(head) {
+function summaryFromHead(head: string): string {
   for (const line of head.split(/\r?\n/u)) {
     const trimmed = line.trim()
     if (trimmed.length === 0) continue
@@ -90,7 +105,7 @@ function summaryFromHead(head) {
  * @param title - note title.
  * @returns a `.md` file name safe on the local filesystem.
  */
-export function slugForTitle(title) {
+export function slugForTitle(title: string): string {
   const base = String(title)
     .trim()
     .toLowerCase()
@@ -106,9 +121,9 @@ export function slugForTitle(title) {
  * @param dir - absolute memory directory.
  * @returns index entries in index order, then unindexed files by name.
  */
-export async function loadIndex(dir) {
-  const entries = []
-  const seen = new Set()
+export async function loadIndex(dir: string): Promise<MemoryEntry[]> {
+  const entries: MemoryEntry[] = []
+  const seen = new Set<string>()
   const indexText = await readTextIfExists(path.join(dir, INDEX_FILE))
   if (indexText !== undefined) {
     for (const line of indexText.split(/\r?\n/u)) {
@@ -129,18 +144,18 @@ export async function loadIndex(dir) {
   return entries
 }
 
-async function readHead(file) {
+async function readHead(file: string): Promise<string> {
   try {
     return (await readBoundedText(file, HEAD_BYTES)).text
   }
   catch (error) {
-    if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return ''
+    if (hasErrnoCode(error, 'ENOENT')) return ''
     throw error
   }
 }
 
 /** Read at most `maxBytes` of a file without buffering the rest. */
-async function readBoundedText(file, maxBytes) {
+async function readBoundedText(file: string, maxBytes: number): Promise<{ text: string; bytes: number; truncated: boolean }> {
   const handle = await open(file, 'r')
   try {
     const info = await handle.stat()
@@ -159,7 +174,7 @@ async function readBoundedText(file, maxBytes) {
  * @param entries - ordered entries.
  * @returns the complete `MEMORY.md` body.
  */
-export function renderIndex(entries) {
+export function renderIndex(entries: readonly MemoryEntry[]): string {
   const lines = [
     '# Memory index',
     '',
@@ -177,7 +192,7 @@ export function renderIndex(entries) {
 }
 
 /** Publish one file atomically so a crash cannot leave a half-written index. */
-async function atomicWrite(file, text) {
+async function atomicWrite(file: string, text: string): Promise<void> {
   const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
   try {
     await writeFile(temporary, text, 'utf8')
@@ -193,9 +208,9 @@ async function atomicWrite(file, text) {
  * Write one memory and keep its index line in sync.
  * @param dir - absolute memory directory.
  * @param input - title, body, and optional file or summary.
- * @returns the stored entry and the complete path.
+ * @returns the stored entry, its complete path, and the remaining entries.
  */
-export async function writeMemory(dir, input) {
+export async function writeMemory(dir: string, input: WriteMemoryInput): Promise<StoredMemory> {
   const title = oneLine(input.title)
   if (title.length === 0) throw new Error('memory_write requires a non-empty title')
   const body = String(input.content ?? '')
@@ -214,7 +229,7 @@ export async function writeMemory(dir, input) {
   await mkdir(dir, { recursive: true })
   await atomicWrite(target, text)
   const entries = await loadIndex(dir)
-  const entry = { title, file, summary }
+  const entry: MemoryEntry = { title, file, summary }
   const position = entries.findIndex(candidate => candidate.file === file)
   if (position >= 0) entries[position] = entry
   else entries.unshift(entry)
@@ -222,7 +237,7 @@ export async function writeMemory(dir, input) {
   return { entry, path: target, entries }
 }
 
-function ensureTrailingNewline(text) {
+function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`
 }
 
@@ -232,7 +247,7 @@ function ensureTrailingNewline(text) {
  * @param file - flat topic file name.
  * @returns the remaining entries.
  */
-export async function deleteMemory(dir, file) {
+export async function deleteMemory(dir: string, file: string): Promise<MemoryEntry[]> {
   if (!isTopicFileName(file)) throw new Error(`invalid memory file name: ${file}`)
   const target = assertContained(dir, file)
   await rm(target, { force: true })
@@ -248,7 +263,7 @@ export async function deleteMemory(dir, file) {
  * @param maxBytes - maximum bytes returned.
  * @returns the content and whether it was cut.
  */
-export async function readMemory(dir, file, maxBytes) {
+export async function readMemory(dir: string, file: string, maxBytes: number): Promise<ReadMemoryResult> {
   if (!isTopicFileName(file)) throw new Error(`invalid memory file name: ${file}`)
   const target = assertContained(dir, file)
   const bounded = await readBoundedText(target, maxBytes)
@@ -268,13 +283,13 @@ export async function readMemory(dir, file, maxBytes) {
  * Every whitespace-separated token must appear on the line.
  * @param dir - absolute memory directory.
  * @param query - user or model supplied search text.
- * @param options - limits.
- * @returns matched lines and omission counts.
+ * @param options - result and scan limits.
+ * @returns matched lines and whether the result was cut.
  */
-export async function searchMemory(dir, query, options) {
+export async function searchMemory(dir: string, query: string, options: SearchOptions): Promise<SearchResult> {
   const tokens = oneLine(query).toLowerCase().split(/\s+/u).filter(token => token.length > 0)
   if (tokens.length === 0) throw new Error('memory_search requires a non-empty query')
-  const matches = []
+  const matches: MemoryMatch[] = []
   let truncated = false
   let scannedBytes = 0
   for (const file of await listTopicFiles(dir)) {
@@ -282,12 +297,12 @@ export async function searchMemory(dir, query, options) {
       truncated = true
       break
     }
-    let content
+    let content: string
     try {
       content = await readFile(path.join(dir, file), 'utf8')
     }
     catch (error) {
-      if (error !== null && typeof error === 'object' && error.code === 'ENOENT') continue
+      if (hasErrnoCode(error, 'ENOENT')) continue
       throw error
     }
     scannedBytes += content.length

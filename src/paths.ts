@@ -22,7 +22,7 @@ export const INDEX_FILE = 'MEMORY.md'
  * @param env - process environment, injectable for tests.
  * @returns the absolute harness home, `$DSH_HOME` or `~/.dsh`.
  */
-export function dshHome(env = process.env) {
+export function dshHome(env: NodeJS.ProcessEnv = process.env): string {
   const configured = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : ''
   return configured.length > 0 ? path.resolve(configured) : path.join(homedir(), '.dsh')
 }
@@ -36,7 +36,7 @@ export function dshHome(env = process.env) {
  * @param cwd - absolute working directory of the session.
  * @returns the absolute project root.
  */
-export function findProjectRoot(cwd) {
+export function findProjectRoot(cwd: string): string {
   const start = path.resolve(cwd)
   let dir = start
   for (;;) {
@@ -52,7 +52,7 @@ export function findProjectRoot(cwd) {
  * @param projectRoot - absolute project root.
  * @returns a filename-safe key such as `dsh-mem-1a2b3c4d5e`.
  */
-export function projectKey(projectRoot) {
+export function projectKey(projectRoot: string): string {
   const root = path.resolve(projectRoot)
   const base = path.basename(root)
     .replace(/[^\p{Letter}\p{Number}._-]+/gu, '-')
@@ -68,7 +68,7 @@ export function projectKey(projectRoot) {
  * @param home - harness home; defaults to {@link dshHome}.
  * @returns the absolute memory directory.
  */
-export function memoryDir(projectRoot, home = dshHome()) {
+export function memoryDir(projectRoot: string, home: string = dshHome()): string {
   return path.join(home, 'memory', projectKey(projectRoot))
 }
 
@@ -79,7 +79,7 @@ export function memoryDir(projectRoot, home = dshHome()) {
  * @returns the absolute, contained path.
  * @throws Error when the resolved path leaves the root.
  */
-export function assertContained(root, candidate) {
+export function assertContained(root: string, candidate: string): string {
   const resolvedRoot = path.resolve(root)
   const resolved = path.resolve(resolvedRoot, candidate)
   if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
@@ -89,11 +89,12 @@ export function assertContained(root, candidate) {
 }
 
 /**
- * Whether a name is one flat topic file this store may touch.
- * @param fileName - bare file name.
+ * Whether a value is one flat topic file this store may touch.
+ * @param fileName - candidate name, typed `unknown` so callers can narrow
+ *   untrusted tool arguments with a single check.
  * @returns true when the name is a plain `.md` file, never the index.
  */
-export function isTopicFileName(fileName) {
+export function isTopicFileName(fileName: unknown): fileName is string {
   if (typeof fileName !== 'string' || fileName.length === 0) return false
   if (fileName === INDEX_FILE) return false
   if (fileName.startsWith('.')) return false

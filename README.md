@@ -22,7 +22,27 @@ memory/<项目名>-<root hash>/
 
 ## 安装
 
-在 DSH 的 **Plugins → Add plugin** 里选择本目录，或者让 agent 用 `plugin_manager` 的 `install_bundle` 安装。安装后在新会话里验证。
+源码是 TypeScript，插件入口是构建产物 `lib/`，所以从 checkout 安装前先构建：
+
+```sh
+npm install
+npm run build
+```
+
+然后在 DSH 的 **Plugins → Add plugin** 里选择本目录，或者让 agent 用 `plugin_manager` 的 `install_bundle` 安装。安装后在新会话里验证。
+
+## 构建与开发
+
+```sh
+npm install
+npm run build      # tsdown：lib/index.js（Host）+ lib/client.js（Client）
+npm run typecheck  # tsc --noEmit，检查 src/ 与 tests/
+npm test           # node --test tests/*.test.ts
+```
+
+- `src/index.ts`、`src/paths.ts`、`src/render.ts`、`src/store.ts`：Host 半插件（工具、注入、面板路由）
+- `src/client/index.ts`、`src/client/contracts.ts`：Client 半插件（聊天行、`/memory` 面板）；`tsdown` 把入口包成 `window.__ModuleLoader__.load` 的 CJS 工厂，React 从页面模块表解析
+- `lib/` 是构建产物，不入库；安装包只包含 `lib/`，不含 `src/`
 
 ## 配置
 
@@ -44,10 +64,10 @@ memory/<项目名>-<root hash>/
 ## 测试
 
 ```sh
-node --test tests/*.test.js
+npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断，以及 pre-step 注入契约。
+覆盖存储层、路径越界防护、索引对账、预算截断，以及 pre-step 注入契约。测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 
 ## 界面
 

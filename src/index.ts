@@ -10,9 +10,27 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './lib/store.js'
-import { dshHome, findProjectRoot, memoryDir } from './lib/paths.js'
-import { renderEntry, renderMemoryContext } from './lib/render.js'
+import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './store.ts'
+import { dshHome, findProjectRoot, memoryDir } from './paths.ts'
+import { renderEntry, renderMemoryContext } from './render.ts'
+import type {
+  Agent,
+  Context,
+  ContentBlock,
+  MemoryEntry,
+  MemoryMatch,
+  MemoryMessageSource,
+  ProjectScope,
+  ReadMemoryResult,
+  RenderedMemory,
+  Session,
+  SessionId,
+  Settings,
+  StoredMemory,
+  ToolDefinition,
+  ToolRunContext,
+  UserMessage,
+} from './types.ts'
 
 /** Plugin name, also the injected message's source kind. */
 export const name = 'memory'
@@ -26,12 +44,39 @@ const DEFAULT_MAX_TOPIC_BYTES = 65_536
 const DEFAULT_MAX_SEARCH_RESULTS = 20
 const DEFAULT_MAX_SEARCH_BYTES = 4 * 1024 * 1024
 
-function boundedInteger(value, fallback, minimum) {
+/** Canonical value of one successful `memory_write`. */
+export interface MemoryWriteOutput {
+  file: string
+  path: string
+  line: string
+  entries: number
+}
+
+/** Canonical value of one `memory_read`. */
+export type MemoryReadOutput = ReadMemoryResult
+
+/** Canonical value of one `memory_search`. */
+export interface MemorySearchOutput {
+  matches: MemoryMatch[]
+  truncated: boolean
+}
+
+/** Narrow untrusted tool arguments to a string-keyed record. */
+function recordOf(args: unknown): Record<string, unknown> {
+  return args !== null && typeof args === 'object' ? args as Record<string, unknown> : {}
+}
+
+/** Read one optional string field from untrusted arguments. */
+function stringOf(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function boundedInteger(value: unknown, fallback: number, minimum: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= minimum ? value : fallback
 }
 
-function normalizeSettings(config) {
-  const row = config !== null && typeof config === 'object' ? config : {}
+function normalizeSettings(config?: unknown): Settings {
+  const row = recordOf(config)
   return {
     maxIndexLines: boundedInteger(row.maxIndexLines, DEFAULT_MAX_INDEX_LINES, 0),
     maxIndexBytes: boundedInteger(row.maxIndexBytes, DEFAULT_MAX_INDEX_BYTES, 0),
@@ -42,23 +87,22 @@ function normalizeSettings(config) {
   }
 }
 
-function digestOf(text) {
+function digestOf(text: string): string {
   return createHash('sha1').update(text).digest('hex')
 }
 
 /** The most recent memory context visible to this agent's session, if any. */
-function visibleMemoryDigest(agent) {
+function visibleMemoryDigest(agent: Agent): string | undefined {
   try {
     const session = agent.session
-    const surface = session.surface
-    const nodes = surface?.nodes
-    if (nodes === undefined || nodes.length === 0) return undefined
+    const nodes = session.surface.nodes
+    if (nodes.length === 0) return undefined
     for (let index = nodes.length - 1; index >= 0; index -= 1) {
       const event = session.eventAt(nodes[index])
       if (event?.type !== 'user/message') continue
-      const source = event.data?.source
-      if (source?.kind !== name) continue
-      return typeof source.memoryDigest === 'string' ? source.memoryDigest : undefined
+      const source = event.data.source
+      if (source.kind !== name) continue
+      return source.memoryDigest
     }
   }
   catch {
@@ -67,20 +111,25 @@ function visibleMemoryDigest(agent) {
   return undefined
 }
 
-function createMemoryMessage(text, details) {
+function createMemoryMessage(
+  text: string,
+  details: { digest: string; projectRoot: string; memoryDir: string; entries: readonly MemoryEntry[] },
+): UserMessage {
+  const source: MemoryMessageSource = {
+    kind: name,
+    form: 'snapshot',
+    sections: [{ name, text }],
+    memoryDigest: details.digest,
+    projectRoot: details.projectRoot,
+    memoryDir: details.memoryDir,
+    entryCount: details.entries.length,
+  }
+  const content: ContentBlock[] = [{ type: 'text', text }]
   return {
-    id: randomUUID(),
+    id: randomUUID() as UserMessage['id'],
     role: 'user',
-    content: [{ type: 'text', text }],
-    source: {
-      kind: name,
-      form: 'snapshot',
-      sections: [{ name, text }],
-      memoryDigest: details.digest,
-      projectRoot: details.projectRoot,
-      memoryDir: details.memoryDir,
-      entryCount: details.entries.length,
-    },
+    content,
+    source,
   }
 }
 
@@ -89,41 +138,41 @@ function createMemoryMessage(text, details) {
  * @param ctx - Host plugin context.
  * @param config - loader row configuration.
  */
-export function apply(ctx, config) {
+export function apply(ctx: Context, config?: unknown): void {
   const settings = normalizeSettings(config)
   /** Digest of the context already delivered to a session, keyed by session. */
-  const delivered = new WeakMap()
+  const delivered = new WeakMap<Session, { digest: string; turn: number }>()
   /**
    * Digest the session already knows without an injection: either it was just
    * injected or the model wrote it. Own writes must not re-inject the whole
    * index, because the tool result already carries the updated index line.
    */
-  const acknowledged = new WeakMap()
+  const acknowledged = new WeakMap<Session, string>()
 
   /** Resolve the project and its memory directory for one agent. */
-  const projectFor = async (agent, signal) => {
+  const projectFor = async (agent: Agent, signal?: AbortSignal): Promise<ProjectScope> => {
     const cwd = await ctx.workingDirectory.ensure(agent, signal)
     const projectRoot = findProjectRoot(cwd)
     return { projectRoot, memoryDir: memoryDir(projectRoot, settings.home) }
   }
 
-  const renderFor = (projectRoot, entries) => {
+  const renderFor = (projectRoot: string, entries: readonly MemoryEntry[]): { entries: MemoryEntry[]; text: string; digest: string } => {
     const text = renderMemoryContext({
       projectRoot,
       entries,
       maxIndexLines: settings.maxIndexLines,
       maxIndexBytes: settings.maxIndexBytes,
     })
-    return { entries, text, digest: digestOf(text) }
+    return { entries: [...entries], text, digest: digestOf(text) }
   }
 
-  const contextFor = async (agent, signal) => {
+  const contextFor = async (agent: Agent, signal?: AbortSignal): Promise<RenderedMemory> => {
     const project = await projectFor(agent, signal)
     const entries = await loadIndex(project.memoryDir)
     return { ...project, ...renderFor(project.projectRoot, entries) }
   }
 
-  ctx.effect(() => ctx.tools.register({
+  const writeTool: ToolDefinition = {
     name: 'memory_write',
     description: 'Save one durable note to this project\'s memory. Creates or updates a topic file and its one-line entry in the project memory index, so a later session can recall it. Use it for user corrections and preferences, project conventions the code does not make obvious, and conclusions that took real work to establish. Do not save secrets, credentials, or material that is cheap to re-read from the repository.',
     parameters: {
@@ -161,19 +210,25 @@ export function apply(ctx, config) {
           entries: { type: 'integer' },
         },
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: `Saved ${value.file} (${value.entries} memories indexed, under ${value.path}).\n${value.line}`,
-      }],
+      render: (_args, value) => {
+        const output = value as unknown as MemoryWriteOutput
+        return [{
+          type: 'text',
+          text: `Saved ${output.file} (${output.entries} memories indexed, under ${output.path}).\n${output.line}`,
+        }]
+      },
     },
-    async execute(args, exec) {
+    async execute(args: unknown, exec: ToolRunContext) {
       if (exec.agent === undefined) throw new Error('memory_write requires an agent session')
+      const row = recordOf(args)
       const project = await projectFor(exec.agent, exec.signal)
-      const stored = await writeMemory(project.memoryDir, {
-        title: args.title,
-        content: args.content,
-        ...typeof args.file === 'string' ? { file: args.file } : {},
-        ...typeof args.summary === 'string' ? { summary: args.summary } : {},
+      const file = stringOf(row.file)
+      const summary = stringOf(row.summary)
+      const stored: StoredMemory = await writeMemory(project.memoryDir, {
+        title: stringOf(row.title) ?? '',
+        content: stringOf(row.content) ?? '',
+        ...(file === undefined ? {} : { file }),
+        ...(summary === undefined ? {} : { summary }),
       })
       // The write is the only change this session knows about; the tool result
       // already names the new index line, so the next step need not repeat the
@@ -184,11 +239,11 @@ export function apply(ctx, config) {
         path: stored.path,
         line: renderEntry(stored.entry),
         entries: stored.entries.length,
-      }
+      } satisfies MemoryWriteOutput
     },
-  }))
+  }
 
-  ctx.effect(() => ctx.tools.register({
+  const readTool: ToolDefinition = {
     name: 'memory_read',
     description: 'Read one project memory file listed in the memory index. Returns the note body, bounded; a truncated result says so.',
     parameters: {
@@ -215,27 +270,31 @@ export function apply(ctx, config) {
           truncated: { type: 'boolean' },
         },
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: `${value.path}${value.truncated ? ` (first ${Buffer.byteLength(value.content, 'utf8')} of ${value.bytes} bytes)` : ''}\n\n${value.content}`,
-      }],
+      render: (_args, value) => {
+        const output = value as unknown as MemoryReadOutput
+        return [{
+          type: 'text',
+          text: `${output.path}${output.truncated ? ` (first ${Buffer.byteLength(output.content, 'utf8')} of ${output.bytes} bytes)` : ''}\n\n${output.content}`,
+        }]
+      },
     },
-    async execute(args, exec) {
+    async execute(args: unknown, exec: ToolRunContext) {
       if (exec.agent === undefined) throw new Error('memory_read requires an agent session')
+      const row = recordOf(args)
       const project = await projectFor(exec.agent, exec.signal)
       try {
-        return await readMemory(project.memoryDir, args.file, settings.maxTopicBytes)
+        return await readMemory(project.memoryDir, String(row.file ?? ''), settings.maxTopicBytes)
       }
       catch (error) {
-        if (error !== null && typeof error === 'object' && error.code === 'ENOENT') {
-          throw new Error(`no memory file named ${args.file} in ${project.memoryDir}; use memory_search to find one.`)
+        if (error !== null && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Error(`no memory file named ${String(row.file ?? '')} in ${project.memoryDir}; use memory_search to find one.`)
         }
         throw error
       }
     },
-  }))
+  }
 
-  ctx.effect(() => ctx.tools.register({
+  const searchTool: ToolDefinition = {
     name: 'memory_search',
     description: 'Search this project\'s memory notes for a literal string. Every whitespace-separated term must appear on the same line. Returns matching file, line number, and text; use memory_read to open a match.',
     parameters: {
@@ -275,38 +334,45 @@ export function apply(ctx, config) {
         },
       },
       render: (_args, value) => {
-        if (value.matches.length === 0) return [{ type: 'text', text: 'No matching memory lines.' }]
-        const lines = value.matches.map(match => `${match.file}:${match.line}: ${match.text}`)
-        if (value.truncated) lines.push('… more matches omitted; narrow the query or raise limit.')
+        const output = value as unknown as MemorySearchOutput
+        if (!Array.isArray(output.matches) || output.matches.length === 0) return [{ type: 'text', text: 'No matching memory lines.' }]
+        const lines = output.matches.map(match => `${match.file}:${match.line}: ${match.text}`)
+        if (output.truncated) lines.push('… more matches omitted; narrow the query or raise limit.')
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    async execute(args, exec) {
+    async execute(args: unknown, exec: ToolRunContext) {
       if (exec.agent === undefined) throw new Error('memory_search requires an agent session')
+      const row = recordOf(args)
       const project = await projectFor(exec.agent, exec.signal)
-      return searchMemory(project.memoryDir, args.query, {
-        limit: boundedInteger(args.limit, settings.maxSearchResults, 1),
+      return searchMemory(project.memoryDir, String(row.query ?? ''), {
+        limit: boundedInteger(row.limit, settings.maxSearchResults, 1),
         maxBytes: settings.maxSearchBytes,
       })
     },
-  }))
+  }
+
+  ctx.effect(() => ctx.tools.register(writeTool))
+  ctx.effect(() => ctx.tools.register(readTool))
+  ctx.effect(() => ctx.tools.register(searchTool))
 
   // The Web UI panel reaches the same store through one owner-only exact route.
   // Tools and the panel therefore share one implementation of every operation.
   ctx.inject(['connection', 'agents'], (scope) => {
-    const reply = (value, status = 200) => Response.json(value, { status })
-    const failure = (code, message, status) => reply({ ok: false, error: { code, message } }, status)
+    const reply = (value: unknown, status = 200): Response => Response.json(value, { status })
+    const failure = (code: string, message: string, status: number): Response => reply({ ok: false, error: { code, message } }, status)
 
-    const serve = async (request) => {
-      let body
+    const serve = async (request: Request): Promise<Response> => {
+      let body: unknown
       try {
         body = await request.json()
       }
       catch {
         return failure('bad-request', 'expected a JSON body', 400)
       }
-      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined
-      const agent = sessionId === undefined ? undefined : scope.agents.get(sessionId)
+      const row = recordOf(body)
+      const sessionId = stringOf(row.sessionId)
+      const agent = sessionId === undefined ? undefined : scope.agents.get(sessionId as SessionId)
       if (agent === undefined) {
         return failure('no-session', 'open a session before managing its project memory', 409)
       }
@@ -314,17 +380,19 @@ export function apply(ctx, config) {
         const cwd = await scope.workingDirectory.ensure(agent, request.signal)
         const projectRoot = findProjectRoot(cwd)
         const dir = memoryDir(projectRoot, settings.home)
-        switch (body.action) {
+        switch (row.action) {
           case 'list':
             return reply({ ok: true, value: { projectRoot, dir, entries: await loadIndex(dir) } })
           case 'read':
-            return reply({ ok: true, value: await readMemory(dir, String(body.file ?? ''), settings.maxTopicBytes) })
+            return reply({ ok: true, value: await readMemory(dir, String(row.file ?? ''), settings.maxTopicBytes) })
           case 'save': {
+            const file = stringOf(row.file)
+            const summary = stringOf(row.summary)
             const stored = await writeMemory(dir, {
-              title: String(body.title ?? ''),
-              content: String(body.content ?? ''),
-              ...typeof body.file === 'string' ? { file: body.file } : {},
-              ...typeof body.summary === 'string' ? { summary: body.summary } : {},
+              title: String(row.title ?? ''),
+              content: String(row.content ?? ''),
+              ...(file === undefined ? {} : { file }),
+              ...(summary === undefined ? {} : { summary }),
             })
             return reply({
               ok: true,
@@ -332,7 +400,7 @@ export function apply(ctx, config) {
             })
           }
           case 'delete':
-            return reply({ ok: true, value: { entries: await deleteMemory(dir, String(body.file ?? '')) } })
+            return reply({ ok: true, value: { entries: await deleteMemory(dir, String(row.file ?? '')) } })
           default:
             return failure('bad-action', 'unknown action; expected list, read, save, or delete', 400)
         }
@@ -361,10 +429,11 @@ export function apply(ctx, config) {
 
   ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
     const decision = await next()
-    if (decision.kind === 'reject' || signal.aborted) return decision
+    if (decision.kind === 'reject') return decision
+    if (signal.aborted) return decision
     // An empty first entry owns a no-step turn; keep the context for a later step.
     if (step === 1 && decision.messages.length === 0) return decision
-    let context
+    let context: RenderedMemory
     try {
       context = await contextFor(agent, signal)
     }

@@ -81,6 +81,8 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 
 ## Verification
 
-`node --test tests/*.test.js` covers the store, the path fence, index reconciliation, budgeting, and the pre-step injection contract.
+Sources are TypeScript under `src/` and are built with tsdown into `lib/` (ESM host bundle plus the browser client factory). The package exports point at `lib/`, so run `npm run build` before installing or reloading the plugin from a checkout.
+
+`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, and the pre-step injection contract.
 
 At runtime, create a memory in one session and ask for it in a new session; this is described in the repository README.

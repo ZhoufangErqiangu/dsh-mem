@@ -1,3 +1,7 @@
+# lib/ is build output: a checkout generates it with `npm run build`.
+lib/
 node_modules/
+.npm-cache/
 *.tmp
+*.log
 .DS_Store

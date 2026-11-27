@@ -2,12 +2,14 @@
  * Rendering for the memory context injected into a session.
  *
  * The block is framed as a `<system-reminder>` like DSH's own workspace
- * instructions, states that notes are reference rather than instructions, and is
- * bounded by both line count and byte budget so a large index cannot crowd out
- * the conversation.
+ * instructions, states that notes are reference rather than instructions, and
+ * is bounded by both line count and byte budget so a large index cannot crowd
+ * out the conversation.
  *
  * @module @local/dsh-memory/render
  */
+
+import type { MemoryEntry, RenderMemoryContextInput } from './types.ts'
 
 /** Opening frame the model already recognizes from workspace instructions. */
 const OPEN = '<system-reminder>'
@@ -18,11 +20,12 @@ const DEFAULT_MAX_LINES = 200
 const DEFAULT_MAX_BYTES = 25_000
 
 /** Neutralize text that could close the frame the plugin owns. */
-function escapeFrame(text) {
-  return String(text).replace(/<\/system-reminder>/giu, '<\\/system-reminder>')
+function escapeFrame(text: string): string {
+  return text.replace(/<\/system-reminder>/giu, '<\\/system-reminder>')
 }
 
-function oneLine(text) {
+/** Collapse arbitrary text into one framed-safe line. */
+function oneLine(text: unknown): string {
   return escapeFrame(String(text).replace(/\s+/gu, ' ').trim())
 }
 
@@ -31,19 +34,23 @@ function oneLine(text) {
  * @param entries - index entries in priority order.
  * @param maxLines - maximum rendered entry lines.
  * @param maxBytes - maximum rendered entry bytes.
- * @returns kept entries and how many were dropped.
+ * @returns kept lines and how many entries were dropped.
  */
-export function boundEntries(entries, maxLines, maxBytes) {
-  const kept = []
+export function boundEntries(
+  entries: readonly MemoryEntry[],
+  maxLines: number,
+  maxBytes: number,
+): { lines: string[]; omitted: number } {
+  const lines: string[] = []
   let bytes = 0
   for (const entry of entries) {
     const line = renderEntry(entry)
     const size = Buffer.byteLength(line, 'utf8') + 1
-    if (kept.length >= maxLines || bytes + size > maxBytes) break
-    kept.push(line)
+    if (lines.length >= maxLines || bytes + size > maxBytes) break
+    lines.push(line)
     bytes += size
   }
-  return { lines: kept, omitted: entries.length - kept.length }
+  return { lines, omitted: entries.length - lines.length }
 }
 
 /**
@@ -51,7 +58,7 @@ export function boundEntries(entries, maxLines, maxBytes) {
  * @param entry - title, file, and summary.
  * @returns the markdown list item.
  */
-export function renderEntry(entry) {
+export function renderEntry(entry: Pick<MemoryEntry, 'title' | 'file'> & { summary?: string }): string {
   const title = oneLine(entry.title).replace(/[[\]]/gu, '')
   const summary = oneLine(entry.summary ?? '')
   return summary.length > 0 ? `- [${title}](${entry.file}) — ${summary}` : `- [${title}](${entry.file})`
@@ -62,12 +69,12 @@ export function renderEntry(entry) {
  * @param input - project, entries, and resolved limits.
  * @returns the bounded prompt text.
  */
-export function renderMemoryContext(input) {
+export function renderMemoryContext(input: RenderMemoryContextInput): string {
   const maxLines = Number.isFinite(input.maxIndexLines) ? Math.max(0, input.maxIndexLines) : DEFAULT_MAX_LINES
   const maxBytes = Number.isFinite(input.maxIndexBytes) ? Math.max(0, input.maxIndexBytes) : DEFAULT_MAX_BYTES
   const total = input.entries.length
   const bounded = boundEntries(input.entries, maxLines, maxBytes)
-  const lines = [OPEN]
+  const lines: string[] = [OPEN]
   const noun = total === 1 ? 'note' : 'notes'
   if (total === 0) {
     lines.push(`Project memory for \`${oneLine(input.projectRoot)}\`: no saved notes yet.`)
