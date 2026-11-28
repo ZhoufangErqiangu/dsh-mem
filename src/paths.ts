@@ -17,6 +17,9 @@ import path from 'node:path'
 /** The index file naming every memory of one project. */
 export const INDEX_FILE = 'MEMORY.md'
 
+/** Directory name of the user-global memory layer. */
+export const GLOBAL_SCOPE_DIR = 'global'
+
 /**
  * Resolve the harness home holding durable user state.
  * @param env - process environment, injectable for tests.
@@ -70,6 +73,18 @@ export function projectKey(projectRoot: string): string {
  */
 export function memoryDir(projectRoot: string, home: string = dshHome()): string {
   return path.join(home, 'memory', projectKey(projectRoot))
+}
+
+/**
+ * Resolve the user-global memory directory.
+ *
+ * Project keys always end in a root hash, so the unhashed `global` name cannot
+ * collide with a project directory.
+ * @param home - harness home; defaults to {@link dshHome}.
+ * @returns the absolute user-global memory directory.
+ */
+export function globalMemoryDir(home: string = dshHome()): string {
+  return path.join(home, 'memory', GLOBAL_SCOPE_DIR)
 }
 
 /**

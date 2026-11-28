@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "项目记忆",
-    "description": "为 agent 提供持久化的项目记忆索引，以及 memory_write、memory_read、memory_search 三个工具；记忆以纯 markdown 文件保存在 harness home 下。",
+    "title": "记忆",
+    "description": "为 agent 提供项目级和用户全局的持久化记忆索引，以及 memory_write、memory_read、memory_search、memory_delete、memory_audit、memory_sweep、memory_restore、memory_dream 工具；记忆以纯 markdown 文件保存在 harness home 下。",
     "detail": "docs/DETAIL.md"
   }
 }

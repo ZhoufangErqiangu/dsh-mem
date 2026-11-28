@@ -293,6 +293,48 @@ test('renderMemoryContext states an empty index without entries', () => {
   assert.match(text, /memory_write/u)
 })
 
+test('renderMemoryContext injects global entries with their own budget', () => {
+  const projectEntries: MemoryEntry[] = [
+    { title: 'Project one', file: 'project-one.md', summary: 'local fact' },
+    { title: 'Project two', file: 'project-two.md', summary: 'another local fact' },
+  ]
+  const globalEntries: MemoryEntry[] = [
+    { title: 'Global one', file: 'global-one.md', summary: 'user preference' },
+    { title: 'Global two', file: 'global-two.md', summary: 'another preference' },
+    { title: 'Global three', file: 'global-three.md', summary: 'one more' },
+  ]
+  const text = renderMemoryContext({
+    projectRoot: '/work/project',
+    entries: projectEntries,
+    maxIndexLines: 10,
+    maxIndexBytes: 25_000,
+    globalEntries,
+    maxGlobalIndexLines: 1,
+    maxGlobalIndexBytes: 25_000,
+  })
+  assert.match(text, /User-global memory: 3 notes saved/u)
+  assert.match(text, /global-one\.md/u)
+  assert.doesNotMatch(text, /global-two\.md/u)
+  assert.match(text, /2 more entries omitted from the global index/u)
+  assert.match(text, /Project memory for `\/work\/project`: 2 notes saved/u)
+  assert.match(text, /project-one\.md/u)
+  assert.match(text, /project-two\.md/u)
+})
+
+test('renderMemoryContext omits the global section when it is empty', () => {
+  const text = renderMemoryContext({
+    projectRoot: '/work/project',
+    entries: [],
+    maxIndexLines: 200,
+    maxIndexBytes: 25_000,
+    globalEntries: [],
+    maxGlobalIndexLines: 40,
+    maxGlobalIndexBytes: 6_000,
+  })
+  assert.doesNotMatch(text, /User-global memory/u)
+  assert.match(text, /no saved notes yet/u)
+})
+
 test('boundEntries stops at the byte budget', () => {
   const entries: MemoryEntry[] = Array.from({ length: 4 }, (_, index) => ({
     title: `Entry ${index}`,

@@ -18,6 +18,8 @@ const CLOSE = '</system-reminder>'
 
 const DEFAULT_MAX_LINES = 200
 const DEFAULT_MAX_BYTES = 25_000
+const DEFAULT_MAX_GLOBAL_LINES = 40
+const DEFAULT_MAX_GLOBAL_BYTES = 6_000
 
 /** Neutralize text that could close the frame the plugin owns. */
 function escapeFrame(text: string): string {
@@ -72,9 +74,31 @@ export function renderEntry(entry: Pick<MemoryEntry, 'title' | 'file'> & { summa
 export function renderMemoryContext(input: RenderMemoryContextInput): string {
   const maxLines = Number.isFinite(input.maxIndexLines) ? Math.max(0, input.maxIndexLines) : DEFAULT_MAX_LINES
   const maxBytes = Number.isFinite(input.maxIndexBytes) ? Math.max(0, input.maxIndexBytes) : DEFAULT_MAX_BYTES
+  const globalEntries = input.globalEntries ?? []
+  const lines: string[] = [OPEN]
+  if (globalEntries.length > 0) {
+    const globalMaxLines = Number.isFinite(input.maxGlobalIndexLines)
+      ? Math.max(0, input.maxGlobalIndexLines as number)
+      : DEFAULT_MAX_GLOBAL_LINES
+    const globalMaxBytes = Number.isFinite(input.maxGlobalIndexBytes)
+      ? Math.max(0, input.maxGlobalIndexBytes as number)
+      : DEFAULT_MAX_GLOBAL_BYTES
+    const bounded = boundEntries(globalEntries, globalMaxLines, globalMaxBytes)
+    const noun = globalEntries.length === 1 ? 'note' : 'notes'
+    lines.push(`User-global memory: ${globalEntries.length} ${noun} saved in earlier sessions. These notes apply across projects; when they conflict with a project note, the project note wins. Open one with \`memory_read\` and \`scope: 'global'\`; save cross-project preferences with \`memory_write\` and \`scope: 'global'\`.`)
+    lines.push('')
+    if (bounded.lines.length > 0) {
+      lines.push(...bounded.lines)
+    }
+    if (bounded.omitted > 0) {
+      lines.push(`- … ${bounded.omitted} more ${bounded.omitted === 1 ? 'entry' : 'entries'} omitted from the global index; use \`memory_search\` with \`scope: 'global'\` to find them.`)
+    }
+    lines.push('')
+    lines.push('---')
+    lines.push('')
+  }
   const total = input.entries.length
   const bounded = boundEntries(input.entries, maxLines, maxBytes)
-  const lines: string[] = [OPEN]
   const noun = total === 1 ? 'note' : 'notes'
   if (total === 0) {
     lines.push(`Project memory for \`${oneLine(input.projectRoot)}\`: no saved notes yet.`)

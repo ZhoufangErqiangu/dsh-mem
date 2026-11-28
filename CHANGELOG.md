@@ -24,9 +24,22 @@ All notable changes to this plugin are recorded here. The project follows
 - `archive/.manifest.json` preserves the exact original file name, including
   names that the readable archive slug would otherwise change.
 - A GitHub Actions workflow running typecheck, tests, and the build on Node 24.
+- User-global memory at `$DSH_HOME/memory/global/`, enabled by default and
+  injected as a second, independently budgeted section before project memory.
+- `scope: 'project' | 'global'` on `memory_write`, `memory_read`,
+  `memory_search`, `memory_delete`, and `memory_restore`; `memory_search`
+  searches both layers by default and labels every match with its scope.
+- A project/global switch in the `/memory` panel; global notes can be listed,
+  read, edited, created, archived, permanently deleted, and restored.
 
 ### Changed
 
+- The injected memory message can now carry a user-global section. The source
+  records `globalEntryCount` alongside the project `entryCount`.
+- The write acknowledgement digest covers both layers, so an external global
+  change re-injects even when the project index is unchanged.
+- `memory_read` and `memory_delete` no longer fall back to another layer; a
+  missing file returns an explicit scope-aware error.
 - Panel delete now archives by default; permanent deletion has a separate
   confirmation.
 - New memory directories use mode `0700` and note/archive/state files use

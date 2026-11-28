@@ -19,7 +19,7 @@
  */
 
 import * as React from 'react'
-import type { AuditReport, MemoryEntry, SweepReport } from '../types.ts'
+import type { AuditReport, MemoryEntry, MemoryScope, SweepReport } from '../types.ts'
 import type {
   ClientContext,
   ConversationMatch,
@@ -35,22 +35,32 @@ const NS = 'memory'
 
 const zh: LocaleDictionary = {
   'row.title': '项目记忆',
+  'row.titleAll': '记忆',
   'row.count': '{count} 条',
+  'row.countScoped': '{project} 项目 / {global} 全局',
   'row.empty': '尚无条目',
   'row.show': '展开记忆索引',
   'row.hide': '收起记忆索引',
   'command.title': '记忆',
-  'command.description': '查看和编辑项目记忆',
-  'panel.title': '项目记忆',
+  'command.description': '查看和编辑项目记忆与全局记忆',
+  'panel.title': '记忆',
   'panel.hint': '保存在 harness home 下，不进仓库；agent 通过 memory_write 写入。',
+  'panel.globalHint': '跨项目生效；与项目记忆冲突时项目优先。',
+  'panel.scopeProject': '项目',
+  'panel.scopeGlobal': '全局',
   'panel.empty': '还没有记忆',
   'panel.emptyHint': '让 agent 记一条，或在下面新建。',
+  'panel.emptyGlobal': '还没有全局记忆',
+  'panel.emptyHintGlobal': '跨项目偏好可以写到这里。',
+  'panel.curationProjectOnly': '整理只作用于项目记忆',
   'panel.new': '新建',
   'panel.save': '保存',
   'panel.archive': '归档',
   'panel.permanent': '永久删除',
   'panel.confirmArchive': '归档「{title}」？会从索引移除，但可在 archive/ 中恢复。',
   'panel.confirmPermanent': '永久删除「{title}」？此操作不可恢复。',
+  'panel.confirmGlobalArchive': '归档全局记忆「{title}」？所有项目都将看不到它，但可在 global/archive/ 恢复。',
+  'panel.confirmGlobalPermanent': '永久删除全局记忆「{title}」？所有项目都将看不到它，且不可恢复。',
   'panel.close': '关闭',
   'panel.loading': '加载中…',
   'panel.none': '从左侧选择一条记忆',
@@ -78,22 +88,32 @@ const zh: LocaleDictionary = {
 }
 const en: LocaleDictionary = {
   'row.title': 'Project memory',
+  'row.titleAll': 'Memory',
   'row.count': '{count} saved',
+  'row.countScoped': '{project} project / {global} global',
   'row.empty': 'no notes yet',
   'row.show': 'Show the memory index',
   'row.hide': 'Hide the memory index',
   'command.title': 'Memory',
-  'command.description': 'View and edit project memory',
-  'panel.title': 'Project memory',
+  'command.description': 'View and edit project and global memory',
+  'panel.title': 'Memory',
   'panel.hint': 'Stored under the harness home, never in the repository; the agent writes with memory_write.',
+  'panel.globalHint': 'Applies across projects; project memory wins on conflict.',
+  'panel.scopeProject': 'Project',
+  'panel.scopeGlobal': 'Global',
   'panel.empty': 'No memory yet',
   'panel.emptyHint': 'Ask the agent to save one, or create one below.',
+  'panel.emptyGlobal': 'No global memory yet',
+  'panel.emptyHintGlobal': 'Cross-project preferences can live here.',
+  'panel.curationProjectOnly': 'Tidy applies to project memory only',
   'panel.new': 'New',
   'panel.save': 'Save',
   'panel.archive': 'Archive',
   'panel.permanent': 'Delete permanently',
   'panel.confirmArchive': 'Archive "{title}"? It leaves the index but stays recoverable under archive/.',
   'panel.confirmPermanent': 'Permanently delete "{title}"? This cannot be undone.',
+  'panel.confirmGlobalArchive': 'Archive global memory "{title}"? Every project will stop seeing it, but it stays recoverable under global/archive/.',
+  'panel.confirmGlobalPermanent': 'Permanently delete global memory "{title}"? Every project will stop seeing it, and this cannot be undone.',
   'panel.close': 'Close',
   'panel.loading': 'Loading…',
   'panel.none': 'Pick a memory on the left',
@@ -192,6 +212,33 @@ const styles = {
     borderBottom: '1px solid var(--dsw-alias-border-l1)',
   },
   heading: { margin: '0', fontSize: '14px', fontWeight: '600' },
+  scopes: {
+    display: 'flex',
+    gap: '2px',
+    padding: '2px',
+    borderRadius: '6px',
+    background: 'var(--dsw-alias-interactive-bg-hover)',
+  },
+  scope: {
+    border: 'none',
+    borderRadius: '4px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-label-secondary)',
+    font: 'inherit',
+    fontSize: '12px',
+    padding: '3px 10px',
+    cursor: 'pointer',
+  },
+  scopeActive: {
+    border: 'none',
+    borderRadius: '4px',
+    background: 'var(--dsw-alias-bg-base)',
+    color: 'var(--dsw-alias-label-primary)',
+    font: 'inherit',
+    fontSize: '12px',
+    padding: '3px 10px',
+    cursor: 'pointer',
+  },
   hint: { color: 'var(--dsw-alias-label-caption)', fontSize: '12px', flex: '1', minWidth: '0' },
   close: {
     border: 'none',
@@ -323,6 +370,8 @@ interface MemoryRowState {
   seq: number
   text: string
   count: number
+  projectCount: number
+  globalCount: number
 }
 
 interface MemoryRowProps {
@@ -336,7 +385,13 @@ function MemoryRow({ node, t }: MemoryRowProps): React.ReactElement {
   const [open, setOpen] = React.useState(false)
   const text = typeof data.text === 'string' ? data.text : ''
   const count = typeof data.count === 'number' && Number.isInteger(data.count) ? data.count : 0
-  const label = count === 0 ? t('row.empty') : t('row.count', { count })
+  const projectCount = typeof data.projectCount === 'number' && Number.isInteger(data.projectCount) ? data.projectCount : 0
+  const globalCount = typeof data.globalCount === 'number' && Number.isInteger(data.globalCount) ? data.globalCount : 0
+  const label = count === 0
+    ? t('row.empty')
+    : globalCount > 0
+      ? t('row.countScoped', { project: projectCount, global: globalCount })
+      : t('row.count', { count })
   return h('div', { style: styles.root, 'data-memory-row': 'true' },
     h('button', {
       type: 'button',
@@ -347,7 +402,7 @@ function MemoryRow({ node, t }: MemoryRowProps): React.ReactElement {
       style: styles.toggle,
     },
       h('span', { 'aria-hidden': true, style: styles.dot }),
-      h('span', { style: styles.title }, t('row.title')),
+      h('span', { style: styles.title }, globalCount > 0 ? t('row.titleAll') : t('row.title')),
       h('span', { style: styles.meta }, `· ${label}`),
       h('span', { 'aria-hidden': true, style: styles.meta }, open ? '▾' : '▸'),
     ),
@@ -368,10 +423,14 @@ const memoryMessageDefinition: ConversationNodeDefinition<MemoryRowState> = {
   start(_context, match: ConversationMatch) {
     const event = match.event
     const source = event.data.source
+    const projectCount = typeof source?.entryCount === 'number' && Number.isInteger(source.entryCount) ? source.entryCount : 0
+    const globalCount = typeof source?.globalEntryCount === 'number' && Number.isInteger(source.globalEntryCount) ? source.globalEntryCount : 0
     return {
       seq: event.seq,
       text: textOf(event.data.content),
-      count: typeof source?.entryCount === 'number' && Number.isInteger(source.entryCount) ? source.entryCount : 0,
+      count: projectCount + globalCount,
+      projectCount,
+      globalCount,
     }
   },
   update: context => context.state,
@@ -427,9 +486,11 @@ function createPanelStore(): PanelStore {
 }
 
 interface ListValue {
+  scope: MemoryScope
   projectRoot: string
   dir: string
   entries: MemoryEntry[]
+  globalEnabled?: boolean
 }
 
 interface ReadValue {
@@ -557,6 +618,8 @@ function reportLines(report: ReportState, t: Translate): string[] {
 
 /** The management panel: list, read, edit, create, delete, and tidy. */
 function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactElement {
+  const [scope, setScope] = React.useState<MemoryScope>('project')
+  const [globalEnabled, setGlobalEnabled] = React.useState(true)
   const [entries, setEntries] = React.useState<MemoryEntry[]>([])
   const [dir, setDir] = React.useState('')
   const [status, setStatus] = React.useState<'loading' | 'ready' | 'failed'>('loading')
@@ -565,20 +628,27 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
   const [view, setView] = React.useState<PanelView>({ kind: 'none' })
   const [report, setReport] = React.useState<ReportState | null>(null)
   const panelRef = React.useRef<HTMLDivElement>(null)
+  const loadSeq = React.useRef(0)
 
   const load = React.useCallback(async () => {
+    const seq = loadSeq.current + 1
+    loadSeq.current = seq
     setStatus('loading')
+    setError(null)
     try {
-      const value = await callMemoryApi<ListValue>({ action: 'list', sessionId })
+      const value = await callMemoryApi<ListValue>({ action: 'list', sessionId, scope })
+      if (seq !== loadSeq.current) return
       setEntries(value.entries)
       setDir(value.dir)
+      setGlobalEnabled(value.globalEnabled !== false)
       setStatus('ready')
     }
     catch (failure) {
+      if (seq !== loadSeq.current) return
       setError(failure instanceof Error ? failure.message : String(failure))
       setStatus('failed')
     }
-  }, [sessionId])
+  }, [sessionId, scope])
 
   React.useEffect(() => { void load() }, [load])
   React.useEffect(() => {
@@ -593,12 +663,22 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
     return () => document.removeEventListener('keydown', onKey, true)
   }, [onClose])
 
+  const switchScope = (next: MemoryScope) => {
+    if (next === scope) return
+    setScope(next)
+    setEntries([])
+    setDir('')
+    setView({ kind: 'none' })
+    setReport(null)
+    setError(null)
+  }
+
   const select = async (entry: MemoryEntry) => {
     setBusy(true)
     setError(null)
     setReport(null)
     try {
-      const value = await callMemoryApi<ReadValue>({ action: 'read', sessionId, file: entry.file })
+      const value = await callMemoryApi<ReadValue>({ action: 'read', sessionId, file: entry.file, scope })
       setView({ kind: 'edit', file: entry.file, title: entry.title, content: value.content })
     }
     catch (failure) {
@@ -617,6 +697,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
       const value = await callMemoryApi<SaveValue>({
         action: 'save',
         sessionId,
+        scope,
         title: view.title,
         content: view.content,
         ...(view.kind === 'edit' ? { file: view.file } : {}),
@@ -635,7 +716,9 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
 
   const remove = async (permanent: boolean) => {
     if (view.kind !== 'edit') return
-    const confirmKey = permanent ? 'panel.confirmPermanent' : 'panel.confirmArchive'
+    const confirmKey = scope === 'global'
+      ? (permanent ? 'panel.confirmGlobalPermanent' : 'panel.confirmGlobalArchive')
+      : (permanent ? 'panel.confirmPermanent' : 'panel.confirmArchive')
     if (!window.confirm(t(confirmKey, { title: view.title }))) return
     setBusy(true)
     setError(null)
@@ -645,6 +728,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
         sessionId,
         file: view.file,
         permanent,
+        scope,
       })
       setEntries(value.entries)
       setView({ kind: 'none' })
@@ -659,6 +743,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
   }
 
   const openAudit = async () => {
+    if (scope !== 'project') return
     setBusy(true)
     setError(null)
     try {
@@ -674,6 +759,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
   }
 
   const runSweep = async () => {
+    if (scope !== 'project') return
     if (!window.confirm(t('panel.confirmSweep'))) return
     setBusy(true)
     setError(null)
@@ -707,13 +793,34 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
     },
       h('div', { style: styles.header },
         h('h2', { style: styles.heading }, t('panel.title')),
-        h('span', { style: styles.hint, title: dir }, dir === '' ? t('panel.hint') : `${dir}`),
+        h('div', { style: styles.scopes },
+          h('button', {
+            type: 'button',
+            style: scope === 'project' ? styles.scopeActive : styles.scope,
+            'aria-pressed': scope === 'project',
+            disabled: busy,
+            onClick: () => switchScope('project'),
+          }, t('panel.scopeProject')),
+          globalEnabled
+            ? h('button', {
+              type: 'button',
+              style: scope === 'global' ? styles.scopeActive : styles.scope,
+              'aria-pressed': scope === 'global',
+              disabled: busy,
+              onClick: () => switchScope('global'),
+            }, t('panel.scopeGlobal'))
+            : null,
+        ),
+        h('span', {
+          style: styles.hint,
+          title: scope === 'global' ? `${t('panel.globalHint')} ${t('panel.curationProjectOnly')}` : dir,
+        }, dir === '' ? (scope === 'global' ? t('panel.globalHint') : t('panel.hint')) : `${dir}`),
         h('button', { type: 'button', style: styles.close, onClick: onClose, 'aria-label': t('panel.close') }, '✕'),
       ),
       h('div', { style: styles.main },
         h('ul', { style: styles.list },
           entries.length === 0
-            ? h('li', { style: { ...styles.empty, padding: '12px 8px' } }, t('panel.empty'))
+            ? h('li', { style: { ...styles.empty, padding: '12px 8px' } }, scope === 'global' ? t('panel.emptyGlobal') : t('panel.empty'))
             : entries.map(entry => h(SummaryItem, {
               key: entry.file,
               entry,
@@ -729,8 +836,8 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
             )
             : view.kind === 'none'
               ? h('div', { style: styles.empty },
-                h('div', null, t('panel.none')),
-                h('div', { style: { ...styles.label, marginTop: '6px' } }, t('panel.hint')),
+                h('div', null, scope === 'global' ? t('panel.emptyGlobal') : t('panel.none')),
+                h('div', { style: { ...styles.label, marginTop: '6px' } }, scope === 'global' ? t('panel.emptyHintGlobal') : t('panel.hint')),
               )
               : h(React.Fragment, null,
                 h('label', { style: styles.label, htmlFor: 'memory-title' }, t('panel.titleLabel')),
@@ -763,7 +870,9 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
               : null,
           )
           : h(React.Fragment, null,
-            h('button', { type: 'button', style: styles.button, onClick: openAudit, disabled: busy }, t('panel.tidy')),
+            scope === 'project'
+              ? h('button', { type: 'button', style: styles.button, onClick: openAudit, disabled: busy }, t('panel.tidy'))
+              : null,
             h('button', {
               type: 'button',
               style: styles.button,

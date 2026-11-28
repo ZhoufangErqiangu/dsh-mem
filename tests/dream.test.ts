@@ -32,6 +32,9 @@ function settings(overrides: Partial<Settings> = {}): Settings {
   return {
     maxIndexLines: 200,
     maxIndexBytes: 25_000,
+    globalMemoryEnabled: true,
+    maxGlobalIndexLines: 40,
+    maxGlobalIndexBytes: 6_000,
     maxTopicBytes: 65_536,
     maxSearchResults: 20,
     maxSearchBytes: 4_194_304,
@@ -122,6 +125,7 @@ test('buildDreamPrompt names the directory and every curation rule', () => {
   assert.match(prompt, /\/home\/\.dsh\/memory\/project-123/u)
   assert.match(prompt, /Start with memory_audit/u)
   assert.match(prompt, /Never pass permanent: true/u)
+  assert.match(prompt, /Never pass scope: "global"/u)
   assert.match(prompt, /80 lines and 12000 bytes/u)
   assert.match(prompt, /At most 40 tool calls/u)
 })

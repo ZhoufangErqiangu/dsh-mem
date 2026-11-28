@@ -1,16 +1,17 @@
 # 路线图：从基础记忆到可维护的记忆
 
-- 日期：2026-11-27
-- 当前版本：`0.3.0`（TypeScript + tsdown，测试 61 项通过）
-- 相关：[CURATION.md](./CURATION.md)（整理功能详细设计）、[DETAIL.md](./DETAIL.md)
+- 日期：2026-11-28
+- 当前版本：`0.4.0`（TypeScript + tsdown，测试 71 项通过）
+- 相关：[CURATION.md](./CURATION.md)（整理功能详细设计）、[GLOBAL.md](./GLOBAL.md)（用户全局记忆）、[DETAIL.md](./DETAIL.md)
 
 ## 1. 基线
 
 已经完成并验证：
 
 - 每个项目一个记忆目录，`MEMORY.md` 索引 + 一篇笔记一个文件。
-- 会话开始时注入一次索引（200 行 / 25 KB 预算），压缩或外部变更后重新注入。
-- 八个模型工具：`memory_write`、`memory_read`、`memory_search`、`memory_delete`、`memory_audit`、`memory_sweep`、`memory_restore`、`memory_dream`。
+- 一个用户全局记忆目录 `$DSH_HOME/memory/global/`，和项目层一起注入，预算独立。
+- 会话开始时注入一次索引（项目 200 行 / 25 KB，全局 40 行 / 6 KB），压缩或外部变更后重新注入。
+- 八个模型工具：`memory_write`、`memory_read`、`memory_search`、`memory_delete`、`memory_audit`、`memory_sweep`、`memory_restore`、`memory_dream`；写、读、搜、删、恢复五个工具支持 `scope: 'project' | 'global'`。
 - 写入确认机制：同会话自己的写不会重复注入整份索引。
 - `/memory` 面板：列表、查看、编辑、新建、删除，走 owner-only 路由。
 - 聊天行：每次注入渲染成独立可展开行。
@@ -28,6 +29,8 @@
 **M2 已完成（2026-11-28）**：`memory_sweep`（默认 dry-run、空笔记/精确重复/旧临时文件/可选的预算溢出归档）、`memory_restore`（同名冲突拒绝）、面板“整理”报告与执行清扫、删除默认归档 + 永久删除二次确认。
 
 **M4 已完成（2026-11-28）**：`memory_search` 改为按 UTF-8 字节计预算；有界读取不再切断多字节字符；`pre-step` 使用短 TTL 索引缓存并在写/删/恢复/清扫时失效；新增 GitHub Actions CI、CHANGELOG；新建目录/文件使用 `0700`/`0600`。61 项测试、typecheck、build 通过。
+
+**P2 全局记忆 G1/G2 已完成（2026-11-28）**：用户全局目录 `$DSH_HOME/memory/global/`、默认开启、独立预算；注入先全局后项目，digest/写确认覆盖两层；五个工具增加 `scope`（默认项目，全局显式）；`memory_read` / `memory_delete` 不回退，找不到显式报错；面板增加项目/全局切换；全局层暂不做整理。测试增至 71 项，`docs/GLOBAL.md` 记录决策。
 
 **M2 现场验收（2026-11-28）**：`memory_sweep` dry-run 报 3 → 2 条、预演归档 1 条；`dryRun: false` 归档了重复笔记并重写索引；`archive/.manifest.json` 记录了精确原文件名；`memory_restore` 恢复成功并清掉 manifest 条目；随后永久删除临时笔记，索引回到 1 条。`/api/memory` 对非 owner 的 curl 返回 401，符合 owner-only 设计；面板点击仍需人工看一眼。
 
@@ -68,11 +71,11 @@
 
 | 方向 | 说明 | 状态 |
 |---|---|---|
-| 语义/BM25 检索 | 当前是逐行字面匹配；没有 embedding | 待定 |
-| 标签、`[[链接]]` | 笔记之间没有关系 | 待定 |
-| 用户全局记忆 | 目前只有项目级；全局层是否纳入未定 | 待定 |
-| 路径作用域规则 | 与指令系统边界重叠，倾向不做 | 待定 |
-| watcher | 外部编辑下一轮才可见 | 可延后 |
+| 语义/BM25 检索 | 决策：维持逐行字面匹配，由主模型按注入的索引决定读哪篇；不引入 embedding 或独立 reranker | ✅ 已决策，保持现状 |
+| 标签、`[[链接]]` | 笔记之间没有关系；等有真实跨笔记跳转需求再做 | 暂缓 |
+| 用户全局记忆 | `$DSH_HOME/memory/global/`、默认开启、独立预算、五个工具 scope、面板切换；全局整理暂不做 | ✅ G1/G2 |
+| 路径作用域规则 | 与指令系统边界重叠，明确不做 | ❌ 非目标 |
+| watcher | 外部编辑下一轮才可见；当前缓存 + pre-step 重组已够用 | 暂缓 |
 
 ### P3 — 产品化
 
@@ -104,20 +107,22 @@
 |---|---|---|
 | `0.4.0` | M1 + M2 + M3：审计、软删除/恢复、确定性清扫、面板整理、Auto Dream（默认关闭） | 索引格式不变；旧目录自动兼容；新增配置都有默认值 |
 | `0.5.0` | M4：性能、编码 bug、CI、文档收尾（代码已完成，版本号待发布时统一 bump） | 行为不变 |
-| `0.6.0` | 可能的召回/作用域扩展 | 待定 |
+| `0.6.0` | P2 用户全局记忆：`global/`、双段注入、scope 工具、面板切换（代码已完成，版本号待发布时统一 bump） | 项目目录和索引格式不变；全局层可关闭 |
 
 每个版本都要求：`npm run build`、`npm run typecheck`、`npm test` 通过；新工具的描述和 schema 在 `DETAIL.md` 更新；README 的“已知边界”同步删改。
 
 ## 6. 非目标（当前明确不做）
 
 - 复刻 Claude Code 的完整记忆机制（指令层、`@path` import、规则树）。
-- 多用户/多租户记忆。
+- 多用户/多租户记忆，团队/组织共享记忆。
 - 云同步、加密存储。
+- 全局 Auto Dream、全局审计/清扫（v1 只保留项目层整理）。
 - 自动永久删除任何笔记。
 - 在未验证工具限制的情况下创建可执行 shell 的整理子会话。
 
 ## 7. 建议的下一步
 
-1. 已确认：软删除、Auto Dream 默认关闭、近似重复只报告。剩余待定项（模型路由、全局作用域、归档溢出）见 [CURATION.md](./CURATION.md) 第 13 节。
-2. M1–M4 均已完成。剩余是 P2 产品决策（语义检索、用户全局记忆、watcher）和 P3 的 Client 渲染测试、归档保留策略。
-3. 自动门槛的现场触发仍未开启验证；可用较低的 `curationMinHours`/`curationMinSessions` 在测试项目上验收。
+1. 已确认：软删除、Auto Dream 默认关闭、近似重复只报告。剩余待定项（模型路由、归档溢出）见 [CURATION.md](./CURATION.md) 第 13 节。
+2. P2 已收敛：召回维持主模型读索引 + 字面检索；用户全局记忆 G1/G2 已完成；路径规则明确不做；标签/链接和 watcher 暂缓。
+3. 剩余是 P3 的 Client 渲染测试、归档保留策略，以及全局记忆的现场验收（写一条全局偏好，新建会话确认两段注入；面板切换项目/全局）。
+4. 自动门槛的现场触发仍未开启验证；可用较低的 `curationMinHours`/`curationMinSessions` 在测试项目上验收。

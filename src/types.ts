@@ -23,7 +23,10 @@ export type { Session, SessionId } from '@deepseek-ai/dsh-session'
 export type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 export type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
-/** One line of the project memory index. */
+/** Which memory layer a tool or panel call addresses. */
+export type MemoryScope = 'project' | 'global'
+
+/** One line of a memory index. */
 export interface MemoryEntry {
   /** Index label. */
   title: string
@@ -48,12 +51,20 @@ export interface MemoryMatch {
   file: string
   line: number
   text: string
+  /** Layer the match came from; set by the tool layer when scopes are merged. */
+  scope?: MemoryScope
 }
 
 /** Resolved row configuration plus the process-owned harness home. */
 export interface Settings {
   maxIndexLines: number
   maxIndexBytes: number
+  /** Whether the user-global layer is injected and writable. Defaults to true. */
+  globalMemoryEnabled: boolean
+  /** Line budget of the injected user-global index. */
+  maxGlobalIndexLines: number
+  /** Byte budget of the injected user-global index. */
+  maxGlobalIndexBytes: number
   maxTopicBytes: number
   maxSearchResults: number
   maxSearchBytes: number
@@ -97,6 +108,9 @@ export interface ProjectScope {
 /** Rendered memory context plus the digest used to decide re-injection. */
 export interface RenderedMemory extends ProjectScope {
   entries: MemoryEntry[]
+  globalEntries: MemoryEntry[]
+  globalMemoryDir: string
+  globalEntryCount: number
   text: string
   digest: string
 }
@@ -271,6 +285,8 @@ export interface SearchOptions {
 export interface SearchResult {
   matches: MemoryMatch[]
   truncated: boolean
+  /** Bytes scanned by this call, so a second scope can share the budget. */
+  scannedBytes: number
 }
 
 /** Inputs to {@link renderMemoryContext}. */
@@ -279,6 +295,10 @@ export interface RenderMemoryContextInput {
   entries: readonly MemoryEntry[]
   maxIndexLines: number
   maxIndexBytes: number
+  /** User-global entries; omitted or empty renders no global section. */
+  globalEntries?: readonly MemoryEntry[]
+  maxGlobalIndexLines?: number
+  maxGlobalIndexBytes?: number
 }
 
 /** One named contribution of the injected snapshot. */
@@ -296,13 +316,17 @@ export interface MemoryMessageSource {
   memoryDigest: string
   projectRoot: string
   memoryDir: string
-  /** Number of index entries in the rendered context. */
+  /** Number of project index entries in the rendered context. */
   entryCount: number
+  /** Absolute user-global memory directory when the layer is enabled. */
+  globalMemoryDir?: string
+  /** Number of user-global index entries in the rendered context. */
+  globalEntryCount?: number
 }
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    /** Per-session project memory index injected by this plugin. */
+    /** Per-session project and user-global memory index injected by this plugin. */
     memory: MemoryMessageSource
   }
 }

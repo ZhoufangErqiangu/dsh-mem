@@ -435,5 +435,5 @@ export async function searchMemory(dir: string, query: string, options: SearchOp
       matches.push({ file, line: index + 1, text: text.length > 240 ? `${text.slice(0, 239)}…` : text })
     }
   }
-  return { matches, truncated }
+  return { matches, truncated, scannedBytes }
 }

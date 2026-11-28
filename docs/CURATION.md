@@ -733,7 +733,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 ### 仍待确认
 
 1. 整理会话用当前会话模型，还是固定配置？**建议默认跟随会话，允许 `curationProvider`/`curationModel` 覆盖**。
-2. 是否把用户级全局记忆纳入下一步？本设计不包含；按既定的作用域划分，只做项目级。
+2. 用户级全局记忆已由 [GLOBAL.md](./GLOBAL.md) 决策并实现（默认开启、独立预算、暂不做全局整理）；本设计的整理逻辑仍然只处理项目级。
 3. `archiveOverflow` 默认是否自动执行？**建议否**，避免自动拿走旧笔记。
 
 ## 14. 实施顺序

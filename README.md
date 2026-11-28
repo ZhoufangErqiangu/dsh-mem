@@ -1,25 +1,31 @@
 # dsh-memory
 
-给 DeepSeek Harness 用的持久化项目记忆插件。思路取 Claude Code 记忆机制里真正有用的那一半：**一个每次会话注入一次的 `MEMORY.md` 索引 + 按需读取的 markdown 笔记文件**，而不是复刻整套 `CLAUDE.md` 指令体系（那部分 DSH 的 `dsh-agent-instructions` 已经做了）。
+给 DeepSeek Harness 用的持久化记忆插件，分**项目级**和**用户全局**两层。思路取 Claude Code 记忆机制里真正有用的那一半：**一个每次会话注入一次的 `MEMORY.md` 索引 + 按需读取的 markdown 笔记文件**，而不是复刻整套 `CLAUDE.md` 指令体系（那部分 DSH 的 `dsh-agent-instructions` 已经做了）。用户全局层是本插件的扩展，用来放跨项目的偏好。
 
 ## 它做什么
 
 - 每个项目一个记忆目录：`$DSH_HOME/memory/<项目名>-<路径哈希>/`
-- 每个会话（以及压缩后）注入一条带帧的上下文消息，内容是记忆索引 + 何时该记、何时不该记
-- 八个模型工具：`memory_write`（写笔记并原子维护索引行，写入时提示相似笔记）、`memory_read`（有界读取）、`memory_search`（按行字面检索）、`memory_delete`（默认归档，可永久删除）、`memory_audit`（重复/过期/超长/预算报告）、`memory_sweep`（确定性清扫，默认 dry-run）、`memory_restore`（从 archive/ 恢复）、`memory_dream`（手动跑一次整理会话）
+- 一个用户全局记忆目录：`$DSH_HOME/memory/global/`，跨项目生效，默认开启，空时不注入
+- 每个会话（以及压缩后）注入一条带帧的上下文消息；有全局笔记时先注入全局段、再注入项目段，两层预算独立
+- 八个模型工具：`memory_write`（写笔记并原子维护索引行，写入时提示相似笔记）、`memory_read`（有界读取）、`memory_search`（按行字面检索）、`memory_delete`（默认归档，可永久删除）、`memory_audit`（重复/过期/超长/预算报告）、`memory_sweep`（确定性清扫，默认 dry-run）、`memory_restore`（从 archive/ 恢复）、`memory_dream`（手动跑一次整理会话）；写、读、搜、删、恢复五个工具支持 `scope: 'project' | 'global'`
 - 笔记是纯 markdown，可以手工编辑、删除、备份；不进仓库、不出现在 `git status`
 
 ## 目录结构
 
 ```
-memory/<项目名>-<root hash>/
-├── MEMORY.md       # 索引：一行一条
-├── testing.md      # 一条记忆一个文件
-├── release-flow.md
-└── archive/        # 软删除目录（含 .manifest.json），不进入索引/搜索
+memory/
+├── global/                 # 用户全局，跨所有项目
+│   ├── MEMORY.md
+│   ├── preferences.md
+│   └── archive/
+└── <项目名>-<root hash>/
+    ├── MEMORY.md           # 索引：一行一条
+    ├── testing.md          # 一条记忆一个文件
+    ├── release-flow.md
+    └── archive/            # 软删除目录（含 .manifest.json），不进入索引/搜索
 ```
 
-项目根按最近的 `.git` 祖先目录判定，和 DSH 的工作区指令作用域一致。索引每次会话开始时都会和目录对账：手工加的文件会被发现，手工删的文件其索引行会被丢弃。
+项目根按最近的 `.git` 祖先目录判定，和 DSH 的工作区指令作用域一致。索引每次会话开始时都会和目录对账：手工加的文件会被发现，手工删的文件其索引行会被丢弃。`global/` 不带 hash，项目目录始终带 root hash，两者不会混淆。
 
 ## 安装
 
@@ -53,8 +59,11 @@ GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和
 - id: memory
   name: '@local/dsh-memory'
   config:
-    maxIndexLines: 200        # 索引最多渲染多少行
-    maxIndexBytes: 25000      # 索引最多渲染多少字节（默认对齐 Claude Code 的 200 行 / 25KB）
+    maxIndexLines: 200        # 项目索引最多渲染多少行
+    maxIndexBytes: 25000      # 项目索引最多渲染多少字节（默认对齐 Claude Code 的 200 行 / 25KB）
+    globalMemoryEnabled: true # 用户全局层开关，默认开启；空时不注入
+    maxGlobalIndexLines: 40   # 全局索引最多渲染多少行
+    maxGlobalIndexBytes: 6000 # 全局索引最多渲染多少字节
     maxTopicBytes: 65536      # memory_read 单次返回上限
     maxSearchResults: 20      # memory_search 默认返回条数
     maxSearchBytes: 4194304   # memory_search 扫描上限
@@ -85,7 +94,7 @@ GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和
 npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话、UTF-8 边界、索引缓存、文件权限，以及 pre-step 注入契约。当前 61 项。
+覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话、UTF-8 边界、索引缓存、文件权限、项目/全局双段注入与 scope 工具语义，以及 pre-step 注入契约。当前 71 项。
 
 测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 
@@ -93,8 +102,8 @@ npm test
 
 Client 半插件提供两块：
 
-1. **聊天行**：每次注入渲染成一行「项目记忆 · N 条」，可展开看完整索引。它用 `exclusive` 抢占该消息，内建上下文的折叠分类不会再接管，所以固定出现在轮次里、不并入过程折叠区。
-2. **`/memory` 面板**：列出索引、查看/编辑正文、新建、归档/永久删除，并提供“整理”：先看审计报告，再执行确定性清扫。数据走 Host 的 owner-only 精确路由 `POST /api/memory`，和工具共用同一份 store 操作；面板写入不向 agent 会话确认，因此 agent 下一轮会自动看到更新后的索引。
+1. **聊天行**：每次注入渲染成一行「项目记忆 · N 条」；有全局笔记时标题变成「记忆」，展开后先看全局段、再看项目段。它用 `exclusive` 抢占该消息，内建上下文的折叠分类不会再接管，所以固定出现在轮次里、不并入过程折叠区。
+2. **`/memory` 面板**：顶部切换“项目 / 全局”；列出当前层索引、查看/编辑正文、新建、归档/永久删除。项目层提供“整理”：先看审计报告，再执行确定性清扫；全局层暂不提供整理。数据走 Host 的 owner-only 精确路由 `POST /api/memory`，和工具共用同一份 store 操作；面板写入不向 agent 会话确认，因此 agent 下一轮会自动看到更新后的索引。
 
 ## 整理
 
@@ -114,15 +123,17 @@ Client 半插件提供两块：
 ## 已知边界
 
 - 检索是字面匹配，没有向量/语义召回
-- 只有一个项目作用域，没有用户全局记忆和按路径生效的规则树
-- 已有手动审计（`memory_audit`）、软删除（`memory_delete`）、确定性清扫（`memory_sweep`）、恢复（`memory_restore`）和可选的 Auto Dream
+- 作用域是项目级 + 用户全局；没有团队/组织层，也没有按路径生效的规则树
+- 全局记忆暂不支持整理：没有全局 `memory_audit`、`memory_sweep`、`memory_dream`，面板“整理”只作用于项目层
+- `memory_read` / `memory_delete` 只读所选 scope，不会自动回退到另一层；找不到时显式报错
+- 已有手动审计（`memory_audit`）、软删除（`memory_delete`）、确定性清扫（`memory_sweep`）、恢复（`memory_restore`）和可选的 Auto Dream；这些都作用于项目层
 - Auto Dream 默认关闭；开启后需要同时满足 `curationMinHours` 和 `curationMinSessions` 才会触发，单次有超时和项目级锁
 - 近似重复只报告，不自动合并；只有空笔记和正文完全相同的笔记会在清扫中被归档
 - 面板的“归档”默认软删除，“永久删除”需要二次确认
 - 索引在每轮开始时重组，外部编辑下一轮才可见
 
-更完整的行为说明见 `docs/DETAIL.md`，版本变更见 `CHANGELOG.md`。
+更完整的行为说明见 `docs/DETAIL.md`，全局记忆的决策见 `docs/GLOBAL.md`，版本变更见 `CHANGELOG.md`。
 
 ## 规划
 
-整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）、M2（确定性清扫、恢复、面板整理）和 M3（Auto Dream、`memory_dream`）已实现；M4（性能、CI、文档收尾）仍待做。
+整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）、M2（确定性清扫、恢复、面板整理）、M3（Auto Dream、`memory_dream`）和 M4（性能、CI、文档收尾）已实现；P2 的用户全局记忆已按 [GLOBAL.md](./docs/GLOBAL.md) 实现，召回维持字面检索，标签/链接和 watcher 仍未做。

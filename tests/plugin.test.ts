@@ -8,9 +8,15 @@ import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 
 import { apply, name } from '../src/index.ts'
-import { memoryDir } from '../src/paths.ts'
+import { globalMemoryDir, memoryDir } from '../src/paths.ts'
 import { readState } from '../src/state.ts'
-import type { MemoryAuditOutput, MemoryDeleteOutput, MemoryWriteOutput } from '../src/index.ts'
+import type {
+  MemoryAuditOutput,
+  MemoryDeleteOutput,
+  MemoryReadOutput,
+  MemorySearchOutput,
+  MemoryWriteOutput,
+} from '../src/index.ts'
 import type {
   Agent,
   Context,
@@ -450,7 +456,9 @@ test('compaction invalidates the acknowledgement', async () => {
 interface MemoryApiReply {
   ok: boolean
   value?: {
+    scope?: string
     dir?: string
+    globalEnabled?: boolean
     content?: string
     entry?: { file: string }
     entries?: Array<{ file: string }>
@@ -550,6 +558,329 @@ test('the panel route lists, saves, reads, and deletes through the same store', 
 
     const traversal = await call({ action: 'read', sessionId: 'session-1', file: '../MEMORY.md' })
     assert.equal(traversal.ok, false)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('globalMemoryDir is the unhashed user layer next to project directories', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  assert.equal(globalMemoryDir(home), path.join(home, 'memory', 'global'))
+  assert.notEqual(globalMemoryDir(home), memoryDir(root, home))
+})
+
+test('a global write is injected next to project memory and read only with scope', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const read = runtime.tools.get('memory_read')
+    assert.ok(write)
+    assert.ok(read)
+
+    await write.execute(
+      { title: 'Project fact', content: '# Project fact\n\nOnly this repository.' },
+      toolContext(makeAgent()),
+    )
+    const globalSaved = await write.execute(
+      { title: 'User preference', content: '# User preference\n\nAnswer in Chinese.', scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryWriteOutput
+    assert.equal(globalSaved.scope, 'global')
+    assert.equal(globalSaved.path, path.join(globalMemoryDir(home), globalSaved.file))
+
+    const handler = preStepHandler(runtime)
+    const injected = messagesOf(await handler(payload(makeAgent()), enterWithPrompt))
+    assert.equal(injected.length, 2)
+    const source = sourceOf(injected[1])
+    assert.equal(source.entryCount, 1)
+    assert.equal(source.globalEntryCount, 1)
+    assert.equal(source.globalMemoryDir, globalMemoryDir(home))
+    assert.match(textOf(injected[1]), /User-global memory: 1 note/u)
+    assert.match(textOf(injected[1]), /User preference/u)
+    assert.match(textOf(injected[1]), /Project fact/u)
+
+    await assert.rejects(
+      read.execute({ file: globalSaved.file }, toolContext(makeAgent())),
+      /no memory file named .* in project memory/u,
+    )
+    const globalRead = await read.execute(
+      { file: globalSaved.file, scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryReadOutput
+    assert.equal(globalRead.scope, 'global')
+    assert.match(globalRead.content, /Answer in Chinese/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('memory_search searches both scopes and honours a scope filter', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const search = runtime.tools.get('memory_search')
+    assert.ok(write)
+    assert.ok(search)
+
+    await write.execute(
+      { title: 'Shared project', content: '# Shared project\n\nA needle in the project.' },
+      toolContext(makeAgent()),
+    )
+    await write.execute(
+      { title: 'Shared global', content: '# Shared global\n\nA needle in the global layer.', scope: 'global' },
+      toolContext(makeAgent()),
+    )
+
+    const both = await search.execute({ query: 'needle' }, toolContext(makeAgent())) as MemorySearchOutput
+    assert.deepEqual(both.matches.map(match => match.scope), ['project', 'global'])
+    assert.deepEqual(both.matches.map(match => match.file), ['shared-project.md', 'shared-global.md'])
+
+    const onlyGlobal = await search.execute(
+      { query: 'needle', scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemorySearchOutput
+    assert.deepEqual(onlyGlobal.matches.map(match => [match.scope, match.file]), [['global', 'shared-global.md']])
+
+    const onlyProject = await search.execute(
+      { query: 'needle', scope: 'project' },
+      toolContext(makeAgent()),
+    ) as MemorySearchOutput
+    assert.deepEqual(onlyProject.matches.map(match => [match.scope, match.file]), [['project', 'shared-project.md']])
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('global notes archive under the global directory and leave project notes alone', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const remove = runtime.tools.get('memory_delete')
+    const read = runtime.tools.get('memory_read')
+    assert.ok(write)
+    assert.ok(remove)
+    assert.ok(read)
+
+    await write.execute(
+      { title: 'Project fact', content: '# Project fact\n\nStay here.' },
+      toolContext(makeAgent()),
+    )
+    const globalSaved = await write.execute(
+      { title: 'Global pref', content: '# Global pref\n\nAcross projects.', scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryWriteOutput
+
+    const removed = await remove.execute(
+      { file: globalSaved.file, scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryDeleteOutput
+    assert.equal(removed.scope, 'global')
+    assert.ok(removed.archivePath.includes(path.join('memory', 'global', 'archive')))
+    assert.equal(removed.entries, 0)
+
+    await assert.rejects(
+      read.execute({ file: globalSaved.file, scope: 'global' }, toolContext(makeAgent())),
+      /no memory file named/u,
+    )
+    const projectRead = await read.execute({ file: 'project-fact.md' }, toolContext(makeAgent())) as MemoryReadOutput
+    assert.equal(projectRead.scope, 'project')
+    assert.match(projectRead.content, /Stay here/u)
+
+    const restore = runtime.tools.get('memory_restore')
+    assert.ok(restore)
+    const restored = await restore.execute(
+      { archive: path.basename(removed.archivePath), scope: 'global' },
+      toolContext(makeAgent()),
+    ) as { file: string; scope: string }
+    assert.equal(restored.scope, 'global')
+    assert.equal(restored.file, 'global-pref.md')
+    const again = await read.execute(
+      { file: 'global-pref.md', scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryReadOutput
+    assert.match(again.content, /Across projects/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('a global write acknowledges the session and an outside global change re-injects', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const handler = preStepHandler(runtime)
+    const write = runtime.tools.get('memory_write')
+    assert.ok(write)
+    const agent = makeAgent()
+
+    await handler(payload(agent, 1, 1), enterWithPrompt)
+    await write.execute(
+      { title: 'Global pref', content: '# Global pref\n\nAnswer in Chinese.', scope: 'global' },
+      toolContext(agent),
+    )
+    assert.equal(messagesOf(await handler(payload(agent, 2, 1), enterWithPrompt)).length, 1)
+
+    await write.execute(
+      { title: 'Global addendum', content: '# Global addendum\n\nPrefer pnpm.', scope: 'global' },
+      toolContext(makeAgent()),
+    )
+    const changed = messagesOf(await handler(payload(agent, 3, 1), enterWithPrompt))
+    assert.equal(changed.length, 2)
+    assert.match(textOf(changed[1]), /Global addendum/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('global memory can be disabled for tools and the panel', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const agent = makeAgent()
+  const sessionId = agent.session.header.id
+  const runtime = fakeRuntime(root, home, { agents: [[sessionId, agent]] })
+  try {
+    apply(runtime.ctx, { globalMemoryEnabled: false })
+    const write = runtime.tools.get('memory_write')
+    assert.ok(write)
+    await assert.rejects(
+      write.execute({ title: 'Nope', content: '# Nope\n\nNo.', scope: 'global' }, toolContext(agent)),
+      /global memory is disabled/u,
+    )
+
+    const handler = preStepHandler(runtime)
+    const injected = messagesOf(await handler(payload(agent), enterWithPrompt))
+    assert.equal(injected.length, 2)
+    assert.doesNotMatch(textOf(injected[1]), /User-global memory/u)
+
+    const route = runtime.routes.get('/api/memory')
+    assert.ok(route)
+    const response = await route.fetch(new Request('http://localhost/api/memory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'list', sessionId, scope: 'global' }),
+    }))
+    const payloadReply = await response.json() as MemoryApiReply
+    assert.equal(payloadReply.ok, false)
+    assert.equal(payloadReply.error?.code, 'global-disabled')
+
+    const projectList = await route.fetch(new Request('http://localhost/api/memory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'list', sessionId }),
+    }))
+    const projectReply = await projectList.json() as MemoryApiReply
+    assert.equal(projectReply.ok, true)
+    assert.equal(projectReply.value?.globalEnabled, false)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('the panel route manages the global layer and refuses global curation', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const agent = makeAgent()
+  const sessionId = agent.session.header.id
+  const runtime = fakeRuntime(root, home, { agents: [[sessionId, agent]] })
+  try {
+    apply(runtime.ctx, {})
+    const route = runtime.routes.get('/api/memory')
+    assert.ok(route)
+    const call = async (body: unknown): Promise<MemoryApiReply> => {
+      const response = await route.fetch(new Request('http://localhost/api/memory', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
+      return await response.json() as MemoryApiReply
+    }
+
+    const saved = await call({
+      action: 'save',
+      sessionId,
+      scope: 'global',
+      title: 'Global pref',
+      content: '# Global pref\n\nAnswer in Chinese.',
+    })
+    assert.equal(saved.ok, true)
+    assert.equal(saved.value?.scope, 'global')
+
+    const listed = await call({ action: 'list', sessionId, scope: 'global' })
+    assert.equal(listed.value?.dir, globalMemoryDir(home))
+    assert.deepEqual(listed.value?.entries?.map(entry => entry.file), ['global-pref.md'])
+
+    const read = await call({ action: 'read', sessionId, scope: 'global', file: 'global-pref.md' })
+    assert.match(read.value?.content ?? '', /Answer in Chinese/u)
+
+    const audit = await call({ action: 'audit', sessionId, scope: 'global' })
+    assert.equal(audit.ok, false)
+    assert.equal(audit.error?.code, 'unsupported-scope')
+    const sweep = await call({ action: 'sweep', sessionId, scope: 'global' })
+    assert.equal(sweep.ok, false)
+    assert.equal(sweep.error?.code, 'unsupported-scope')
+
+    const deleted = await call({ action: 'delete', sessionId, scope: 'global', file: 'global-pref.md' })
+    assert.equal(deleted.ok, true)
+    assert.deepEqual(deleted.value?.entries, [])
+
+    const projectlist = await call({ action: 'list', sessionId })
+    assert.deepEqual(projectlist.value?.entries, [])
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('the same file name in both scopes stays separate and reads the selected layer', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const write = runtime.tools.get('memory_write')
+    const read = runtime.tools.get('memory_read')
+    assert.ok(write)
+    assert.ok(read)
+
+    await write.execute(
+      { title: 'Preferences', content: '# Preferences\n\nProject copy.' },
+      toolContext(makeAgent()),
+    )
+    await write.execute(
+      { title: 'Preferences', content: '# Preferences\n\nGlobal copy.', scope: 'global' },
+      toolContext(makeAgent()),
+    )
+
+    const projectRead = await read.execute({ file: 'preferences.md' }, toolContext(makeAgent())) as MemoryReadOutput
+    assert.equal(projectRead.scope, 'project')
+    assert.match(projectRead.content, /Project copy/u)
+    assert.doesNotMatch(projectRead.content, /Global copy/u)
+
+    const globalRead = await read.execute(
+      { file: 'preferences.md', scope: 'global' },
+      toolContext(makeAgent()),
+    ) as MemoryReadOutput
+    assert.equal(globalRead.scope, 'global')
+    assert.match(globalRead.content, /Global copy/u)
+    assert.doesNotMatch(globalRead.content, /Project copy/u)
   }
   finally {
     runtime.restore()

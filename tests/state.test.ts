@@ -23,6 +23,9 @@ function settings(overrides: Partial<Settings> = {}): Settings {
   return {
     maxIndexLines: 200,
     maxIndexBytes: 25_000,
+    globalMemoryEnabled: true,
+    maxGlobalIndexLines: 40,
+    maxGlobalIndexBytes: 6_000,
     maxTopicBytes: 65_536,
     maxSearchResults: 20,
     maxSearchBytes: 4_194_304,
