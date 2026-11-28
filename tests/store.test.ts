@@ -133,6 +133,16 @@ test('searchMemory requires every term on one line and honours the limit', async
   assert.deepEqual(none.matches, [])
 })
 
+test('searchMemory measures the scan budget in UTF-8 bytes, not characters', async () => {
+  const dir = await memoryDirectory()
+  await writeMemory(dir, { title: 'Chinese', content: '# Chinese\n\n' + '中'.repeat(100) })
+  const full = await searchMemory(dir, '中', { limit: 10, maxBytes: 1_000 })
+  assert.equal(full.matches.length, 1)
+  const tooSmall = await searchMemory(dir, '中', { limit: 10, maxBytes: 150 })
+  assert.equal(tooSmall.truncated, true)
+  assert.deepEqual(tooSmall.matches, [])
+})
+
 test('deleteMemory archives the note and drops its index line', async () => {
   const dir = await memoryDirectory()
   await writeMemory(dir, { title: 'Temporary', content: 'Drop me.' })

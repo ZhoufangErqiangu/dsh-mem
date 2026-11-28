@@ -369,7 +369,7 @@ export async function searchMemory(dir: string, query: string, options: SearchOp
       if (hasErrnoCode(error, 'ENOENT')) continue
       throw error
     }
-    scannedBytes += content.length
+    scannedBytes += Buffer.byteLength(content, 'utf8')
     if (scannedBytes > options.maxBytes) {
       truncated = true
       break
