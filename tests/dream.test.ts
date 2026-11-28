@@ -39,6 +39,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     duplicateThreshold: 0.6,
     oversizeBytes: 16_384,
     maxAuditNotes: 200,
+    archiveOverflow: false,
     curationEnabled: true,
     curationMinHours: 24,
     curationMinSessions: 5,

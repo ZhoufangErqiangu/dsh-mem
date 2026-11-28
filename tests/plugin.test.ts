@@ -161,7 +161,9 @@ test('apply registers the memory tools', async () => {
       'memory_delete',
       'memory_dream',
       'memory_read',
+      'memory_restore',
       'memory_search',
+      'memory_sweep',
       'memory_write',
     ])
   }
@@ -452,9 +454,64 @@ interface MemoryApiReply {
     content?: string
     entry?: { file: string }
     entries?: Array<{ file: string }>
+    archived?: boolean | Array<{ file: string; archivePath: string }>
+    archivePath?: string
+    file?: string
+    duplicates?: Array<{ files: string[] }>
+    dryRun?: boolean
+    after?: { notes: number }
   }
   error?: { code: string; message: string }
 }
+
+test('the panel route audits, previews and applies a sweep, then restores', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const agent = makeAgent()
+  const runtime = fakeRuntime(root, home, { agents: [['session-1', agent]] })
+  try {
+    apply(runtime.ctx, {})
+    const route = runtime.routes.get('/api/memory')
+    assert.ok(route, 'the owner-only panel route is registered')
+    const call = async (body: unknown): Promise<MemoryApiReply> => {
+      const response = await route.fetch(new Request('http://localhost/api/memory', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
+      return await response.json() as MemoryApiReply
+    }
+
+    await call({ action: 'save', sessionId: 'session-1', title: 'Alpha', file: 'alpha.md', content: '# Same\n\nBody.' })
+    await call({ action: 'save', sessionId: 'session-1', title: 'Beta', file: 'beta.md', content: '# Same\n\nBody.' })
+
+    const audit = await call({ action: 'audit', sessionId: 'session-1' })
+    assert.equal(audit.ok, true)
+    assert.ok((audit.value?.duplicates?.length ?? 0) >= 1)
+
+    const preview = await call({ action: 'sweep', sessionId: 'session-1', dryRun: true })
+    assert.equal(preview.ok, true)
+    assert.equal(preview.value?.dryRun, true)
+    const before = await call({ action: 'list', sessionId: 'session-1' })
+    assert.equal(before.value?.entries?.length, 2)
+
+    const applied = await call({ action: 'sweep', sessionId: 'session-1', dryRun: false })
+    assert.equal(applied.ok, true)
+    assert.equal(applied.value?.after?.notes, 1)
+    const archived = applied.value?.archived
+    assert.ok(Array.isArray(archived))
+    assert.equal(archived.length, 1)
+    const archiveName = path.basename((archived[0] as { archivePath: string }).archivePath)
+
+    const restored = await call({ action: 'restore', sessionId: 'session-1', archive: archiveName })
+    assert.equal(restored.ok, true)
+    assert.equal(restored.value?.file, 'alpha.md')
+    assert.equal(restored.value?.entries?.length, 2)
+  }
+  finally {
+    runtime.restore()
+  }
+})
 
 test('the panel route lists, saves, reads, and deletes through the same store', async () => {
   const root = await workspace()

@@ -6,7 +6,7 @@
 
 - 每个项目一个记忆目录：`$DSH_HOME/memory/<项目名>-<路径哈希>/`
 - 每个会话（以及压缩后）注入一条带帧的上下文消息，内容是记忆索引 + 何时该记、何时不该记
-- 六个模型工具：`memory_write`（写笔记并原子维护索引行，写入时提示相似笔记）、`memory_read`（有界读取）、`memory_search`（按行字面检索）、`memory_delete`（默认归档，可永久删除）、`memory_audit`（重复/过期/超长/预算报告）、`memory_dream`（手动跑一次整理会话）
+- 八个模型工具：`memory_write`（写笔记并原子维护索引行，写入时提示相似笔记）、`memory_read`（有界读取）、`memory_search`（按行字面检索）、`memory_delete`（默认归档，可永久删除）、`memory_audit`（重复/过期/超长/预算报告）、`memory_sweep`（确定性清扫，默认 dry-run）、`memory_restore`（从 archive/ 恢复）、`memory_dream`（手动跑一次整理会话）
 - 笔记是纯 markdown，可以手工编辑、删除、备份；不进仓库、不出现在 `git status`
 
 ## 目录结构
@@ -16,7 +16,7 @@ memory/<项目名>-<root hash>/
 ├── MEMORY.md       # 索引：一行一条
 ├── testing.md      # 一条记忆一个文件
 ├── release-flow.md
-└── archive/        # memory_delete 的软删除目录，不进入索引/搜索
+└── archive/        # 软删除目录（含 .manifest.json），不进入索引/搜索
 ```
 
 项目根按最近的 `.git` 祖先目录判定，和 DSH 的工作区指令作用域一致。索引每次会话开始时都会和目录对账：手工加的文件会被发现，手工删的文件其索引行会被丢弃。
@@ -60,6 +60,7 @@ npm test           # node --test tests/*.test.ts
     duplicateThreshold: 0.6   # 标题/摘要相似度达到多少报告为近似重复
     oversizeBytes: 16384      # 超过多少字节报告为超长
     maxAuditNotes: 200        # 一次 memory_audit 最多检查多少篇
+    archiveOverflow: false    # 清扫时是否自动归档超预算的最旧笔记
     curationEnabled: false    # Auto Dream 总开关，默认关闭
     curationMinHours: 24      # 距上次成功整理至少多少小时
     curationMinSessions: 5    # 距上次成功整理至少多少个会话
@@ -80,7 +81,7 @@ npm test           # node --test tests/*.test.ts
 npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话，以及 pre-step 注入契约。当前 50 项。
+覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话，以及 pre-step 注入契约。当前 57 项。
 
 测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 
@@ -89,7 +90,14 @@ npm test
 Client 半插件提供两块：
 
 1. **聊天行**：每次注入渲染成一行「项目记忆 · N 条」，可展开看完整索引。它用 `exclusive` 抢占该消息，内建上下文的折叠分类不会再接管，所以固定出现在轮次里、不并入过程折叠区。
-2. **`/memory` 面板**：列出索引、查看/编辑正文、新建、删除。数据走 Host 的 owner-only 精确路由 `POST /api/memory`，和工具共用同一份 store 操作；面板写入不向 agent 会话确认，因此 agent 下一轮会自动看到更新后的索引。
+2. **`/memory` 面板**：列出索引、查看/编辑正文、新建、归档/永久删除，并提供“整理”：先看审计报告，再执行确定性清扫。数据走 Host 的 owner-only 精确路由 `POST /api/memory`，和工具共用同一份 store 操作；面板写入不向 agent 会话确认，因此 agent 下一轮会自动看到更新后的索引。
+
+## 整理
+
+- `memory_audit`：只读报告，列出近似重复、过期、超长和预算压力。
+- `memory_sweep`：默认 dry-run；`dryRun: false` 时归档空笔记和完全重复的笔记、清理旧临时文件、重写索引；`archiveOverflow: true` 时还会归档最旧的笔记直到索引回到 80% 预算。
+- `memory_restore`：按归档文件名把笔记移回顶层，目标同名时拒绝覆盖。
+- 面板“整理”提供同样的审计报告和执行清扫入口。
 
 ## 自动整理（Auto Dream）
 
@@ -103,14 +111,14 @@ Client 半插件提供两块：
 
 - 检索是字面匹配，没有向量/语义召回
 - 只有一个项目作用域，没有用户全局记忆和按路径生效的规则树
-- 已有手动审计（`memory_audit`）、软删除（`memory_delete`）和可选的 Auto Dream；确定性清扫/恢复（M2）还没做
+- 已有手动审计（`memory_audit`）、软删除（`memory_delete`）、确定性清扫（`memory_sweep`）、恢复（`memory_restore`）和可选的 Auto Dream
 - Auto Dream 默认关闭；开启后需要同时满足 `curationMinHours` 和 `curationMinSessions` 才会触发，单次有超时和项目级锁
-- 近似重复只报告，不自动合并；只有正文完全相同的笔记会在后续清扫中被归档
-- 面板的删除目前仍是永久删除；agent 的 `memory_delete` 默认归档，面板会在 M2 改为归档
+- 近似重复只报告，不自动合并；只有空笔记和正文完全相同的笔记会在清扫中被归档
+- 面板的“归档”默认软删除，“永久删除”需要二次确认
 - 索引在每轮开始时重组，外部编辑下一轮才可见
 
 更完整的行为说明见 `docs/DETAIL.md`。
 
 ## 规划
 
-整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）和 M3（Auto Dream、`memory_dream`）已实现；M2（确定性清扫、恢复、面板整理）仍待实现。
+整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）、M2（确定性清扫、恢复、面板整理）和 M3（Auto Dream、`memory_dream`）已实现；M4（性能、CI、文档收尾）仍待做。

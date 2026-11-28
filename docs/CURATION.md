@@ -1,8 +1,8 @@
 # 记忆整理（Curation）设计稿
 
-- 状态：M1 已实现（写锁、软删除、审计、相似提示、预算提示）；M3 已实现（Auto Dream + `memory_dream`，默认关闭）；M2 待实现
+- 状态：M1（写锁、软删除、审计、相似提示、预算提示）、M2（清扫、恢复、面板整理）、M3（Auto Dream + `memory_dream`）均已实现；M4 待做
 - 日期：2026-11-27
-- 适用版本：`0.4.0`（M1、M2），`0.5.0`（M3）
+- 适用版本：`0.4.0`（M1–M3）
 - 关联：[ROADMAP.md](./ROADMAP.md)、[DETAIL.md](./DETAIL.md)
 
 ## 1. 问题
@@ -125,7 +125,8 @@ archive/<UTC yyyymmddThhmmss>-<slug>-<4位随机>.md
 
 - 例：`archive/20261127T190000-testing-conventions-a1b2.md`。
 - 归档时保留原文件内容，不改写正文。
-- 恢复：`memory_restore`（M2）把归档文件移回顶层；目标同名文件已存在时拒绝并报错，不覆盖。
+- `archive/.manifest.json` 记录每个归档名对应的**精确原文件名**；文件名本身保持可读的 slug，恢复时优先查 manifest，缺失时回退到从归档名解析。
+- 恢复：`memory_restore` 把归档文件移回顶层；目标同名文件已存在时拒绝并报错，不覆盖。
 - 归档文件不参与 `memory_search`；需要时可先恢复再读。
 
 ## 7. 详细设计
@@ -283,9 +284,9 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
 - 超长：`bytes > oversizeBytes`（默认 16 KB）或 `lines > 400`。按字节降序返回。
 - 索引压力：用 `boundEntries` 计算 `usedLines` / `usedBytes` / `omitted`；`overBudget = omitted > 0`。
 
-### 7.4 `memory_sweep` 与 `memory_restore`
+### 7.4 `memory_sweep` 与 `memory_restore`（M2，已实现）
 
-确定性清扫，不调用模型。
+确定性清扫，不调用模型。实现位于 `src/sweep.ts` 与 `src/archive.ts`。
 
 参数：
 
@@ -359,9 +360,9 @@ The index is over budget. Run `memory_audit`, then merge or `memory_delete` stal
 - 这是纯渲染改动，不增加 I/O 和模型调用。
 - 只在 `omitted > 0` 时出现，避免每轮都提示。
 
-### 7.6 面板
+### 7.6 面板（M2，已实现）
 
-M2 增加：
+实现内容：
 
 1. **列表元数据**：每行显示大小和更新时间；点击仍打开正文。
 2. **“整理”按钮**：
@@ -370,7 +371,7 @@ M2 增加：
    - 每组重复提供“逐条查看”，不提供一键语义合并；合并仍由 agent 或人完成。
 3. **归档/永久删除**：
    - 普通删除改为“归档”；“永久删除”放在二次确认里。
-   - M2 可选“归档”列表，M3 视需要再加恢复入口。
+   - 归档列表/恢复入口仍可后续增加；`memory_restore` 已提供工具级恢复。
 
 路由新增动作：
 
@@ -624,20 +625,22 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 |---|---|---|
 | `src/lock.ts`（新） | `withStoreLock`、跨进程锁、过期锁清理、`.dream.lock` | M1/M3 |
 | `src/similarity.ts`（新） | 规范化、分词、Jaccard、聚簇 | M1 |
-| `src/audit.ts`（新） | `auditMemory`、报告类型（`sweepMemory` 留到 M2） | M1 |
+| `src/audit.ts`（新） | `auditMemory`、报告类型 | M1 |
+| `src/archive.ts`（新） | 归档命名、manifest、解析、路径围栏 | M2 |
+| `src/sweep.ts`（新） | `sweepMemory`、临时文件/空笔记/精确重复/溢出 | M2 |
 | `src/state.ts`（新） | `.state.json` 读写、门槛判断 `curationDue` | M3 |
 | `src/dream.ts`（新） | 整理提示词、受限子会话、超时与销毁 | M3 |
 | `src/store.ts` | 拆 `archiveMemory`；`writeMemory` 返回 `similar`；加锁；`restoreMemory` | M1/M2 |
-| `src/index.ts` | 注册 `memory_delete`、`memory_audit`、`memory_dream`；配置；Auto Dream 触发（`memory_sweep`/`memory_restore` 留到 M2） | M1–M3 |
+| `src/index.ts` | 注册 `memory_delete`、`memory_audit`、`memory_sweep`、`memory_restore`、`memory_dream`；配置；Auto Dream 触发 | M1–M3 |
 | `src/render.ts` | 预算提示文案 | M1 |
 | `src/types.ts` | 新类型、配置字段 | M1–M3 |
-| `src/client/index.ts` | 面板元数据、整理报告、归档/永久删除、路由动作 | M2 |
-| `locale/zh.json`、`locale/en.json` | 面板文案 | M2 |
+| `src/client/index.ts` | 面板整理报告、执行清扫、归档/永久删除 | M2 |
 | `tests/store.test.ts` | 锁、删除/归档、相似提示 | M1 |
 | `tests/audit.test.ts`（新） | 审计、清扫、恢复、相似度（中英文） | M1/M2 |
-| `tests/plugin.test.ts` | 新工具、预算提示、会话计数 | M1/M3 |
+| `tests/plugin.test.ts` | 新工具、预算提示、会话计数、面板 audit/sweep/restore | M1–M3 |
 | `tests/state.test.ts`（新） | 状态、门槛、成功/失败结算 | M3 |
 | `tests/dream.test.ts`（新） | 提示词、工具限制、超时、子会话收尾 | M3 |
+| `tests/sweep.test.ts`（新） | 清扫 dry-run/apply、溢出、恢复、冲突 | M2 |
 
 模块尽量保持在 300 行以内；`src/index.ts` 已经超过 800 行，M2 的清扫/恢复应继续拆到 `src/audit.ts`/`src/store.ts`，不要堆在入口。
 
@@ -678,12 +681,14 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 - ✅ 索引超预算时注入文本出现整理提示。
 - ✅ `npm test`（37 项）、`npm run typecheck`、`npm run build` 通过。
 
-### M2 清扫与面板
+### M2 清扫与面板（已实现 2026-11-28）
 
-- `memory_sweep` 的 `dryRun` 不改变文件系统；`dryRun: false` 只处理空文件、精确重复、临时文件。
-- 归档可恢复；同名冲突拒绝。
-- 面板能查看审计报告并执行清扫；删除默认归档，永久删除有二次确认。
-- 索引、搜索、面板三处对归档的可见性一致。
+- ✅ `memory_sweep` 的 `dryRun` 不改变文件系统；`dryRun: false` 只处理空文件、精确重复、旧临时文件。
+- ✅ `archiveOverflow` 开启时按 mtime 归档最旧笔记，直到索引回到 80% 预算。
+- ✅ 归档可恢复；同名冲突拒绝；非法归档名拒绝。
+- ✅ 面板能查看审计报告并执行清扫；删除默认归档，永久删除有二次确认。
+- ✅ 索引、搜索、面板三处对归档的可见性一致。
+- ✅ 2026-11-28 现场验收：`memory_sweep` dry-run 预演 3 → 2 条，apply 后归档重复笔记并重写索引；`.manifest.json` 记录精确原文件名；`memory_restore` 恢复成功并清除 manifest 条目；最终临时笔记清理完毕，索引回到 1 条。
 
 ### M3 Auto Dream（已实现 2026-11-27）
 
@@ -700,7 +705,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 | 里程碑 | 内容 | 提交拆分 | 估时 |
 |---|---|---|---|
 | M1 | 锁、`memory_delete`、`memory_audit`、相似提示、预算提示、测试 | 4 个提交 | 1.5–2 天 |
-| M2 | `memory_sweep`、`archive/`、`memory_restore`、面板 | 3 个提交 | 2–3 天 |
+| M2 | `memory_sweep`、`archive/`、`memory_restore`、面板 | 已实现 | 2026-11-28 |
 | M3 | `.state.json`、门槛、整理子会话、`memory_dream`、开关 | 已实现 | 2026-11-27 |
 | M4 | 性能、bug、CI、文档 | 按需 | 1–2 天 |
 
@@ -734,9 +739,9 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 ## 14. 实施顺序
 
 1. ✅ `src/lock.ts` + `writeMemory`/`deleteMemory` 加锁，补并发测试。
-2. ✅ `archiveMemory` + `memory_delete`（面板删除语义调整留到 M2）。
+2. ✅ `archiveMemory` + `memory_delete` + 面板归档/永久删除。
 3. ✅ `src/similarity.ts` + `memory_audit` + 写入相似提示。
 4. ✅ `render.ts` 预算提示 + 工具注册 + 配置 + 测试。
 5. ✅ M3：`.state.json` 门槛、受限整理子会话、`memory_dream`、超时/锁、文档。
-6. ⏳ M2：`sweep` + `restore` + 面板整理视图。
-7. ⏳ 版本号与发布。
+6. ✅ M2：`sweep` + `restore` + 面板整理视图。
+7. ⏳ M4：性能、编码 bug、CI、发布。

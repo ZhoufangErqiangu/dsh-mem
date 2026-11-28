@@ -12,7 +12,7 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { withStoreLock } from './lock.ts'
-import { atomicWrite } from './store.ts'
+import { atomicWrite } from './atomic.ts'
 import type { CurationState, DreamResult, Settings } from './types.ts'
 
 /** State file beside `MEMORY.md`. */

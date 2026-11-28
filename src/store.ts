@@ -8,11 +8,12 @@
  * @module @local/dsh-memory/store
  */
 
-import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { atomicWrite } from './atomic.ts'
 import { INDEX_FILE, assertContained, isTopicFileName } from './paths.ts'
+import { ARCHIVE_DIR, archiveFileName, archivePath as resolveArchivePath, forgetArchive, isArchiveFileName, originalNameOf, readArchiveManifest, rememberArchive } from './archive.ts'
 import { withStoreLock } from './lock.ts'
 import { similarEntries } from './similarity.ts'
 import type {
@@ -22,6 +23,7 @@ import type {
   MemoryEntry,
   MemoryMatch,
   ReadMemoryResult,
+  RestoreMemoryResult,
   SearchOptions,
   SearchResult,
   StoredMemory,
@@ -38,8 +40,7 @@ const SUMMARY_MAX_CHARS = 160
 /** Bound for the head of a file inspected to derive an index line. */
 const HEAD_BYTES = 4096
 
-/** Subdirectory holding soft-deleted notes. */
-export const ARCHIVE_DIR = 'archive'
+export { ARCHIVE_DIR }
 
 /** Default title/summary similarity for write-time duplicate hints. */
 const DEFAULT_DUPLICATE_THRESHOLD = 0.6
@@ -204,23 +205,6 @@ export function renderIndex(entries: readonly MemoryEntry[]): string {
 }
 
 /**
- * Publish one file atomically so a crash cannot leave a half-written index.
- * @param file - absolute target path.
- * @param text - complete contents.
- */
-export async function atomicWrite(file: string, text: string): Promise<void> {
-  const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
-  try {
-    await writeFile(temporary, text, 'utf8')
-    await rename(temporary, file)
-  }
-  catch (error) {
-    await rm(temporary, { force: true }).catch(() => {})
-    throw error
-  }
-}
-
-/**
  * Write one memory and keep its index line in sync.
  *
  * The whole index update runs under the store lock, so two sessions writing at
@@ -269,22 +253,13 @@ function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`
 }
 
-/** Build a collision-resistant archive file name. */
-function archiveName(file: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z')
-  const base = file.slice(0, -3)
-    .replace(/[^\p{Letter}\p{Number}._-]+/gu, '-')
-    .slice(0, 64)
-  const suffix = randomUUID().replace(/-/gu, '').slice(0, 4)
-  return `${stamp}-${base}-${suffix}.md`
-}
-
 /** Move one note into `archive/` and return its absolute path. */
 async function archiveLocked(dir: string, file: string, _reason: ArchiveReason): Promise<string> {
   const archiveDir = path.join(dir, ARCHIVE_DIR)
   await mkdir(archiveDir, { recursive: true })
-  const archivePath = assertContained(dir, path.join(ARCHIVE_DIR, archiveName(file)))
+  const archivePath = resolveArchivePath(dir, archiveFileName(file))
   await rename(assertContained(dir, file), archivePath)
+  await rememberArchive(dir, path.basename(archivePath), file)
   return archivePath
 }
 
@@ -316,6 +291,32 @@ export async function deleteMemory(
     const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
     await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
     return { entries, archived: true, archivePath }
+  })
+}
+
+/**
+ * Restore one generated archive file to the top level.
+ *
+ * The archive name carries the original file name, so no manifest is needed.
+ * A collision with an existing topic file is refused rather than overwritten.
+ * @param dir - absolute memory directory.
+ * @param archiveName - generated archive file name.
+ * @returns the restored file name and the rebuilt index entries.
+ */
+export async function restoreMemory(dir: string, archiveName: string): Promise<RestoreMemoryResult> {
+  if (!isArchiveFileName(archiveName)) throw new Error(`invalid archive file name: ${archiveName}`)
+  return withStoreLock(dir, async () => {
+    const manifest = await readArchiveManifest(dir)
+    const original = manifest[archiveName] ?? originalNameOf(archiveName)
+    if (original === undefined) throw new Error(`archive name does not name a valid topic file: ${archiveName}`)
+    const source = resolveArchivePath(dir, archiveName)
+    const target = assertContained(dir, original)
+    if (existsSync(target)) throw new Error(`cannot restore ${archiveName}: ${original} already exists`)
+    await rename(source, target)
+    await forgetArchive(dir, archiveName)
+    const entries = await loadIndex(dir)
+    await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    return { file: original, entries }
   })
 }
 

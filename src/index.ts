@@ -2,8 +2,9 @@
  * `@local/dsh-memory` — durable, file-based project memory for DSH agents.
  *
  * Each session receives the project's `MEMORY.md` index as one injected context
- * message, and six tools maintain the store: `memory_write`, `memory_read`,
- * `memory_search`, `memory_delete`, `memory_audit`, and `memory_dream`. Files live under
+ * message, and eight tools maintain the store: `memory_write`, `memory_read`,
+ * `memory_search`, `memory_delete`, `memory_audit`, `memory_sweep`,
+ * `memory_restore`, and `memory_dream`. Files live under
  * `<harness home>/memory/<project key>/` as plain markdown, so they are
  * inspectable, editable, and never mixed into the repository.
  *
@@ -15,7 +16,8 @@ import { auditMemory } from './audit.ts'
 import { runDream } from './dream.ts'
 import { tryAcquireCurationLock } from './lock.ts'
 import { finishCuration, markSession } from './state.ts'
-import { deleteMemory, loadIndex, readMemory, searchMemory, writeMemory } from './store.ts'
+import { deleteMemory, loadIndex, readMemory, restoreMemory, searchMemory, writeMemory } from './store.ts'
+import { sweepMemory } from './sweep.ts'
 import { dshHome, findProjectRoot, memoryDir } from './paths.ts'
 import { renderEntry, renderMemoryContext } from './render.ts'
 import type {
@@ -31,11 +33,13 @@ import type {
   ProjectScope,
   ReadMemoryResult,
   RenderedMemory,
+  RestoreMemoryResult,
   Session,
   SessionId,
   Settings,
   SimilarNote,
   StoredMemory,
+  SweepReport,
   ToolDefinition,
   ToolRunContext,
   UserMessage,
@@ -56,6 +60,7 @@ const DEFAULT_STALE_DAYS = 90
 const DEFAULT_DUPLICATE_THRESHOLD = 0.6
 const DEFAULT_OVERSIZE_BYTES = 16_384
 const DEFAULT_MAX_AUDIT_NOTES = 200
+const DEFAULT_ARCHIVE_OVERFLOW = false
 const DEFAULT_CURATION_ENABLED = false
 const DEFAULT_CURATION_MIN_HOURS = 24
 const DEFAULT_CURATION_MIN_SESSIONS = 5
@@ -91,6 +96,12 @@ export interface MemoryDeleteOutput {
 
 /** Canonical value of one `memory_audit`. */
 export type MemoryAuditOutput = AuditReport
+
+/** Canonical value of one `memory_sweep`. */
+export type MemorySweepOutput = SweepReport
+
+/** Canonical value of one `memory_restore`. */
+export type MemoryRestoreOutput = RestoreMemoryResult
 
 /** Narrow untrusted tool arguments to a string-keyed record. */
 function recordOf(args: unknown): Record<string, unknown> {
@@ -128,6 +139,7 @@ function normalizeSettings(config?: unknown): Settings {
     duplicateThreshold: boundedNumber(row.duplicateThreshold, DEFAULT_DUPLICATE_THRESHOLD, 0.3, 0.95),
     oversizeBytes: boundedInteger(row.oversizeBytes, DEFAULT_OVERSIZE_BYTES, 1024),
     maxAuditNotes: Math.min(boundedInteger(row.maxAuditNotes, DEFAULT_MAX_AUDIT_NOTES, 1), 1000),
+    archiveOverflow: row.archiveOverflow === true,
     curationEnabled: row.curationEnabled === true,
     curationMinHours: boundedInteger(row.curationMinHours, DEFAULT_CURATION_MIN_HOURS, 1),
     curationMinSessions: boundedInteger(row.curationMinSessions, DEFAULT_CURATION_MIN_SESSIONS, 1),
@@ -459,8 +471,8 @@ export function apply(ctx: Context, config?: unknown): void {
       render: (_args, value) => {
         const output = value as unknown as MemoryDeleteOutput
         const text = output.archived
-          ? `Archived ${output.file} to ${output.archivePath} (${output.entries} memories remain). Move it back to restore it.`
-          : `Deleted ${output.file} permanently (${output.entries} memories remain).`
+          ? `Archived ${output.file} to ${output.archivePath} (${output.entries} ${output.entries === 1 ? 'memory' : 'memories'} remain). Move it back to restore it.`
+          : `Deleted ${output.file} permanently (${output.entries} ${output.entries === 1 ? 'memory' : 'memories'} remain).`
         return [{ type: 'text', text }]
       },
     },
@@ -606,8 +618,9 @@ export function apply(ctx: Context, config?: unknown): void {
       render: (_args, value) => {
         const output = value as unknown as MemoryAuditOutput
         const budget = output.budget
+        const noun = output.notes === 1 ? 'note' : 'notes'
         const lines = [
-          `${output.notes} notes, ${output.bytes} bytes. Index: ${budget.usedLines}/${budget.maxLines} lines, ${budget.usedBytes}/${budget.maxBytes} bytes${budget.overBudget ? ' (over budget)' : ''}.`,
+          `${output.notes} ${noun}, ${output.bytes} bytes. Index: ${budget.usedLines}/${budget.maxLines} lines, ${budget.usedBytes}/${budget.maxBytes} bytes${budget.overBudget ? ' (over budget)' : ''}.`,
         ]
         if (output.duplicates.length > 0) {
           lines.push('Duplicates:')
@@ -647,11 +660,173 @@ export function apply(ctx: Context, config?: unknown): void {
     },
   }
 
+  const sweepTool: ToolDefinition = {
+    name: 'memory_sweep',
+    description: 'Preview or apply deterministic memory cleanup: reconcile the index, archive empty notes, archive exact duplicate notes (keeping the newest), and remove stale temporary files. Near-duplicates are never merged here. Defaults to a dry run; pass dryRun: false to apply.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        dryRun: {
+          type: 'boolean',
+          description: 'Only report what would change. Defaults to true.',
+        },
+        archiveOverflow: {
+          type: 'boolean',
+          description: 'Archive the oldest notes until the index fits 80% of its budget. Defaults to the plugin configuration.',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['dryRun', 'before', 'after', 'archived', 'removedTemps', 'indexRewritten', 'overBudget'],
+        properties: {
+          dryRun: { type: 'boolean' },
+          before: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['notes', 'bytes', 'lines'],
+            properties: {
+              notes: { type: 'integer' },
+              bytes: { type: 'integer' },
+              lines: { type: 'integer' },
+            },
+          },
+          after: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['notes', 'bytes', 'lines'],
+            properties: {
+              notes: { type: 'integer' },
+              bytes: { type: 'integer' },
+              lines: { type: 'integer' },
+            },
+          },
+          archived: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'archivePath', 'reason'],
+              properties: {
+                file: { type: 'string' },
+                archivePath: { type: 'string' },
+                reason: { type: 'string', enum: ['duplicate', 'empty', 'overflow'] },
+              },
+            },
+          },
+          removedTemps: { type: 'array', items: { type: 'string' } },
+          indexRewritten: { type: 'boolean' },
+          overBudget: { type: 'boolean' },
+        },
+      },
+      render: (_args, value) => {
+        const output = value as unknown as MemorySweepOutput
+        const verb = output.dryRun ? 'would be archived' : 'archived'
+        const archiveNoun = output.archived.length === 1 ? 'note' : 'notes'
+        const tempNoun = output.removedTemps.length === 1 ? 'temp file' : 'temp files'
+        const lines = [
+          `${output.dryRun ? 'Sweep preview' : 'Sweep complete'}: ${output.before.notes} -> ${output.after.notes} notes, ${output.before.bytes} -> ${output.after.bytes} bytes.`,
+          `Index: ${output.after.lines} entries${output.overBudget ? ' (still over budget)' : ''}. ${output.removedTemps.length} ${tempNoun} ${output.dryRun ? 'would be' : 'were'} removed; ${output.archived.length} ${archiveNoun} ${verb}.`,
+        ]
+        for (const item of output.archived) lines.push(`- ${item.file} -> ${item.archivePath} (${item.reason})`)
+        if (output.indexRewritten) lines.push(`${output.dryRun ? 'The index would be rewritten.' : 'The index was rewritten.'}`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    async execute(args: unknown, exec: ToolRunContext) {
+      if (exec.agent === undefined) throw new Error('memory_sweep requires an agent session')
+      const row = recordOf(args)
+      const project = await projectFor(exec.agent, exec.signal)
+      const archiveOverflow = row.archiveOverflow === true
+        ? true
+        : row.archiveOverflow === false
+          ? false
+          : settings.archiveOverflow
+      return sweepMemory(project.memoryDir, {
+        dryRun: row.dryRun !== false,
+        archiveOverflow,
+        maxIndexLines: settings.maxIndexLines,
+        maxIndexBytes: settings.maxIndexBytes,
+      })
+    },
+  }
+
+  const restoreTool: ToolDefinition = {
+    name: 'memory_restore',
+    description: 'Restore one note previously archived by memory_delete or memory_sweep. Takes the archive file name from an archive path; refuses to overwrite an existing note.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['archive'],
+      properties: {
+        archive: {
+          type: 'string',
+          description: 'Generated archive file name, such as `20261127T190000Z-testing-a1b2.md`.',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['file', 'entries'],
+        properties: {
+          file: { type: 'string' },
+          entries: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'title', 'summary'],
+              properties: {
+                file: { type: 'string' },
+                title: { type: 'string' },
+                summary: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        const output = value as unknown as MemoryRestoreOutput
+        return [{ type: 'text', text: `Restored ${output.file} (${output.entries.length} ${output.entries.length === 1 ? 'memory' : 'memories'} indexed).` }]
+      },
+    },
+    async execute(args: unknown, exec: ToolRunContext) {
+      if (exec.agent === undefined) throw new Error('memory_restore requires an agent session')
+      const row = recordOf(args)
+      const archive = String(row.archive ?? '')
+      const project = await projectFor(exec.agent, exec.signal)
+      try {
+        const restored = await restoreMemory(project.memoryDir, archive)
+        return {
+          file: restored.file,
+          entries: restored.entries.map(entry => ({
+            file: entry.file,
+            title: entry.title,
+            summary: entry.summary,
+          })),
+        }
+      }
+      catch (error) {
+        if (errorCode(error) === 'ENOENT') {
+          throw new Error(`no archive file named ${archive} in ${project.memoryDir}/archive; check the archive path.`)
+        }
+        throw error
+      }
+    },
+  }
+
   ctx.effect(() => ctx.tools.register(writeTool))
   ctx.effect(() => ctx.tools.register(readTool))
   ctx.effect(() => ctx.tools.register(searchTool))
   ctx.effect(() => ctx.tools.register(deleteTool))
   ctx.effect(() => ctx.tools.register(auditTool))
+  ctx.effect(() => ctx.tools.register(sweepTool))
+  ctx.effect(() => ctx.tools.register(restoreTool))
 
   // Curation needs the agent factory. The manual tool is always available when
   // the service exists; the automatic trigger is added only when enabled.
@@ -733,7 +908,7 @@ export function apply(ctx: Context, config?: unknown): void {
           return [{
             type: 'text',
             text: output.ok
-              ? `Curation completed; ${output.notes} notes remain.${output.summary.length > 0 ? `\n${output.summary}` : ''}`
+              ? `Curation completed; ${output.notes} ${output.notes === 1 ? 'note' : 'notes'} remain.${output.summary.length > 0 ? `\n${output.summary}` : ''}`
               : `Curation failed: ${output.error ?? 'unknown error'}`,
           }]
         },
@@ -799,13 +974,43 @@ export function apply(ctx: Context, config?: unknown): void {
             })
           }
           case 'delete': {
-            // The panel's delete is an explicit human confirmation, so it keeps
-            // the historical hard-delete behavior until M2 adds an archive view.
-            const removed = await deleteMemory(dir, String(row.file ?? ''), { permanent: true })
-            return reply({ ok: true, value: { entries: removed.entries } })
+            const removed = await deleteMemory(dir, String(row.file ?? ''), { permanent: row.permanent === true })
+            return reply({ ok: true, value: { entries: removed.entries, archived: removed.archived, archivePath: removed.archivePath ?? '' } })
           }
+          case 'audit':
+            return reply({
+              ok: true,
+              value: await auditMemory(dir, projectRoot, {
+                staleDays: settings.staleDays,
+                threshold: settings.duplicateThreshold,
+                limit: 10,
+                verbose: false,
+                maxNotes: settings.maxAuditNotes,
+                maxIndexLines: settings.maxIndexLines,
+                maxIndexBytes: settings.maxIndexBytes,
+                oversizeBytes: settings.oversizeBytes,
+              }),
+            })
+          case 'sweep': {
+            const archiveOverflow = row.archiveOverflow === true
+              ? true
+              : row.archiveOverflow === false
+                ? false
+                : settings.archiveOverflow
+            return reply({
+              ok: true,
+              value: await sweepMemory(dir, {
+                dryRun: row.dryRun !== false,
+                archiveOverflow,
+                maxIndexLines: settings.maxIndexLines,
+                maxIndexBytes: settings.maxIndexBytes,
+              }),
+            })
+          }
+          case 'restore':
+            return reply({ ok: true, value: await restoreMemory(dir, String(row.archive ?? '')) })
           default:
-            return failure('bad-action', 'unknown action; expected list, read, save, or delete', 400)
+            return failure('bad-action', 'unknown action; expected list, read, save, delete, audit, sweep, or restore', 400)
         }
       }
       catch (error) {

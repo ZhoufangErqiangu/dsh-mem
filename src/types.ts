@@ -65,6 +65,8 @@ export interface Settings {
   oversizeBytes: number
   /** Upper bound on notes inspected by one audit. */
   maxAuditNotes: number
+  /** Whether a sweep may archive the oldest notes to get back under budget. */
+  archiveOverflow: boolean
   /** Whether the gated Auto Dream curation pass may run. Defaults to false. */
   curationEnabled: boolean
   /** Minimum hours since the last successful curation. */
@@ -171,6 +173,38 @@ export interface AuditOptions {
   maxIndexLines: number
   maxIndexBytes: number
   oversizeBytes: number
+}
+
+/** Limits for one deterministic sweep. */
+export interface SweepOptions {
+  dryRun: boolean
+  archiveOverflow: boolean
+  maxIndexLines: number
+  maxIndexBytes: number
+}
+
+/** One archived note in a sweep report. */
+export interface SweepArchive {
+  file: string
+  archivePath: string
+  reason: 'duplicate' | 'empty' | 'overflow'
+}
+
+/** Result of one deterministic sweep. */
+export interface SweepReport {
+  dryRun: boolean
+  before: { notes: number; bytes: number; lines: number }
+  after: { notes: number; bytes: number; lines: number }
+  archived: SweepArchive[]
+  removedTemps: string[]
+  indexRewritten: boolean
+  overBudget: boolean
+}
+
+/** Result of one archive restore. */
+export interface RestoreMemoryResult {
+  file: string
+  entries: MemoryEntry[]
 }
 
 /** Durable per-project curation clock, stored beside the index. */

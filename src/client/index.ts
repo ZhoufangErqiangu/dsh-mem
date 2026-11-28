@@ -19,7 +19,7 @@
  */
 
 import * as React from 'react'
-import type { MemoryEntry } from '../types.ts'
+import type { AuditReport, MemoryEntry, SweepReport } from '../types.ts'
 import type {
   ClientContext,
   ConversationMatch,
@@ -47,18 +47,34 @@ const zh: LocaleDictionary = {
   'panel.emptyHint': '让 agent 记一条，或在下面新建。',
   'panel.new': '新建',
   'panel.save': '保存',
-  'panel.delete': '删除',
-  'panel.confirmDelete': '确定删除「{title}」？此操作不可撤销。',
+  'panel.archive': '归档',
+  'panel.permanent': '永久删除',
+  'panel.confirmArchive': '归档「{title}」？会从索引移除，但可在 archive/ 中恢复。',
+  'panel.confirmPermanent': '永久删除「{title}」？此操作不可恢复。',
   'panel.close': '关闭',
   'panel.loading': '加载中…',
   'panel.none': '从左侧选择一条记忆',
   'panel.titleLabel': '标题',
   'panel.contentLabel': '内容',
   'panel.saved': '已保存',
-  'panel.deleted': '已删除',
+  'panel.archived': '已归档',
+  'panel.deleted': '已永久删除',
   'panel.titlePlaceholder': '给这条记忆起个名字',
   'panel.contentPlaceholder': '写清楚学到了什么、为什么重要、下次怎么做。',
   'panel.count': '{count} 条记忆',
+  'panel.tidy': '整理',
+  'panel.auditTitle': '记忆整理',
+  'panel.sweep': '执行清扫',
+  'panel.confirmSweep': '执行清扫会归档空笔记和完全重复的笔记；若启用了 archiveOverflow，还会归档最旧笔记。是否继续？',
+  'panel.back': '返回',
+  'panel.report.budget': '{notes} 条笔记 · 索引 {lines}/{maxLines} 行 · {bytes}/{maxBytes} 字节',
+  'panel.report.duplicates': '重复 {count} 组',
+  'panel.report.stale': '过期 {count} 条',
+  'panel.report.oversized': '超长 {count} 条',
+  'panel.report.clean': '没有发现需要清理的内容。',
+  'panel.report.overBudget': '索引仍超出预算。',
+  'panel.report.sweep': '清理前 {before} 条 → 清理后 {after} 条；归档 {archived} 个，清理临时文件 {temps} 个。',
+  'panel.report.indexRewritten': '索引已重写。',
 }
 const en: LocaleDictionary = {
   'row.title': 'Project memory',
@@ -74,18 +90,34 @@ const en: LocaleDictionary = {
   'panel.emptyHint': 'Ask the agent to save one, or create one below.',
   'panel.new': 'New',
   'panel.save': 'Save',
-  'panel.delete': 'Delete',
-  'panel.confirmDelete': 'Delete "{title}"? This cannot be undone.',
+  'panel.archive': 'Archive',
+  'panel.permanent': 'Delete permanently',
+  'panel.confirmArchive': 'Archive "{title}"? It leaves the index but stays recoverable under archive/.',
+  'panel.confirmPermanent': 'Permanently delete "{title}"? This cannot be undone.',
   'panel.close': 'Close',
   'panel.loading': 'Loading…',
   'panel.none': 'Pick a memory on the left',
   'panel.titleLabel': 'Title',
   'panel.contentLabel': 'Content',
   'panel.saved': 'Saved',
-  'panel.deleted': 'Deleted',
+  'panel.archived': 'Archived',
+  'panel.deleted': 'Permanently deleted',
   'panel.titlePlaceholder': 'Name this memory',
   'panel.contentPlaceholder': 'What was learned, why it matters, and what to do next time.',
   'panel.count': '{count} items',
+  'panel.tidy': 'Tidy',
+  'panel.auditTitle': 'Memory tidy',
+  'panel.sweep': 'Run cleanup',
+  'panel.confirmSweep': 'Cleanup archives empty notes and byte-identical duplicates; with archiveOverflow enabled it also archives the oldest notes. Continue?',
+  'panel.back': 'Back',
+  'panel.report.budget': '{notes} notes · index {lines}/{maxLines} lines · {bytes}/{maxBytes} bytes',
+  'panel.report.duplicates': 'Duplicate groups: {count}',
+  'panel.report.stale': 'Stale: {count}',
+  'panel.report.oversized': 'Oversized: {count}',
+  'panel.report.clean': 'Nothing needs deterministic cleanup.',
+  'panel.report.overBudget': 'The index is still over budget.',
+  'panel.report.sweep': '{before} → {after} notes; archived {archived}, removed {temps} temp files.',
+  'panel.report.indexRewritten': 'The index was rewritten.',
 }
 
 const styles = {
@@ -232,6 +264,7 @@ const styles = {
   footer: {
     display: 'flex',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: '8px',
     padding: '10px 16px 14px',
     borderTop: '1px solid var(--dsw-alias-border-l1)',
@@ -253,6 +286,16 @@ const styles = {
     borderRadius: '6px',
     background: 'var(--dsw-alias-state-business-primary)',
     color: 'var(--dsw-alias-bg-base)',
+    font: 'inherit',
+    fontSize: '12px',
+    padding: '5px 12px',
+    cursor: 'pointer',
+  },
+  danger: {
+    border: '1px solid var(--dsw-alias-border-l1)',
+    borderRadius: '6px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-state-error-primary)',
     font: 'inherit',
     fontSize: '12px',
     padding: '5px 12px',
@@ -405,7 +448,13 @@ interface SaveValue {
 
 interface DeleteValue {
   entries: MemoryEntry[]
+  archived: boolean
+  archivePath: string
 }
+
+type ReportState =
+  | { kind: 'audit'; data: AuditReport }
+  | { kind: 'sweep'; data: SweepReport }
 
 /** Call the owner-only panel route; throws the Host's message on refusal. */
 async function callMemoryApi<T>(body: Record<string, unknown>): Promise<T> {
@@ -461,7 +510,52 @@ interface MemoryPanelProps {
   onClose: () => void
 }
 
-/** The management panel: list, read, edit, create, delete. */
+/** Render the audit or sweep report as plain report lines. */
+function reportLines(report: ReportState, t: Translate): string[] {
+  if (report.kind === 'sweep') {
+    const data = report.data
+    const lines = [t('panel.report.sweep', {
+      before: data.before.notes,
+      after: data.after.notes,
+      archived: data.archived.length,
+      temps: data.removedTemps.length,
+    })]
+    for (const item of data.archived) lines.push(`- ${item.file} → ${item.archivePath} (${item.reason})`)
+    if (data.indexRewritten) lines.push(t('panel.report.indexRewritten'))
+    if (data.overBudget) lines.push(t('panel.report.overBudget'))
+    return lines
+  }
+
+  const data = report.data
+  const lines = [t('panel.report.budget', {
+    notes: data.notes,
+    lines: data.budget.usedLines,
+    maxLines: data.budget.maxLines,
+    bytes: data.budget.usedBytes,
+    maxBytes: data.budget.maxBytes,
+  })]
+  if (data.duplicates.length > 0) {
+    lines.push(t('panel.report.duplicates', { count: data.duplicates.length }))
+    for (const group of data.duplicates) {
+      lines.push(`- ${group.kind} ${Math.round(group.score * 100)}%: ${group.files.join(', ')}`)
+    }
+  }
+  if (data.stale.length > 0) {
+    lines.push(t('panel.report.stale', { count: data.stale.length }))
+    for (const note of data.stale) lines.push(`- ${note.file} (${note.ageDays}d)`)
+  }
+  if (data.oversized.length > 0) {
+    lines.push(t('panel.report.oversized', { count: data.oversized.length }))
+    for (const note of data.oversized) lines.push(`- ${note.file} (${note.bytes} bytes)`)
+  }
+  if (data.duplicates.length === 0 && data.stale.length === 0 && data.oversized.length === 0) {
+    lines.push(t('panel.report.clean'))
+  }
+  if (data.budget.overBudget) lines.push(t('panel.report.overBudget'))
+  return lines
+}
+
+/** The management panel: list, read, edit, create, delete, and tidy. */
 function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactElement {
   const [entries, setEntries] = React.useState<MemoryEntry[]>([])
   const [dir, setDir] = React.useState('')
@@ -469,6 +563,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [view, setView] = React.useState<PanelView>({ kind: 'none' })
+  const [report, setReport] = React.useState<ReportState | null>(null)
   const panelRef = React.useRef<HTMLDivElement>(null)
 
   const load = React.useCallback(async () => {
@@ -501,6 +596,7 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
   const select = async (entry: MemoryEntry) => {
     setBusy(true)
     setError(null)
+    setReport(null)
     try {
       const value = await callMemoryApi<ReadValue>({ action: 'read', sessionId, file: entry.file })
       setView({ kind: 'edit', file: entry.file, title: entry.title, content: value.content })
@@ -537,15 +633,55 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
     }
   }
 
-  const remove = async () => {
+  const remove = async (permanent: boolean) => {
     if (view.kind !== 'edit') return
-    if (!window.confirm(t('panel.confirmDelete', { title: view.title }))) return
+    const confirmKey = permanent ? 'panel.confirmPermanent' : 'panel.confirmArchive'
+    if (!window.confirm(t(confirmKey, { title: view.title }))) return
     setBusy(true)
     setError(null)
     try {
-      const value = await callMemoryApi<DeleteValue>({ action: 'delete', sessionId, file: view.file })
+      const value = await callMemoryApi<DeleteValue>({
+        action: 'delete',
+        sessionId,
+        file: view.file,
+        permanent,
+      })
       setEntries(value.entries)
       setView({ kind: 'none' })
+      setStatus('ready')
+    }
+    catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure))
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  const openAudit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const value = await callMemoryApi<AuditReport>({ action: 'audit', sessionId })
+      setReport({ kind: 'audit', data: value })
+    }
+    catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure))
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  const runSweep = async () => {
+    if (!window.confirm(t('panel.confirmSweep'))) return
+    setBusy(true)
+    setError(null)
+    try {
+      const value = await callMemoryApi<SweepReport>({ action: 'sweep', sessionId, dryRun: false })
+      setReport({ kind: 'sweep', data: value })
+      setView({ kind: 'none' })
+      await load()
     }
     catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure))
@@ -586,50 +722,71 @@ function MemoryPanel({ sessionId, t, onClose }: MemoryPanelProps): React.ReactEl
             })),
         ),
         h('div', { style: styles.editor },
-          view.kind === 'none'
-            ? h('div', { style: styles.empty },
-              h('div', null, t('panel.none')),
-              h('div', { style: { ...styles.label, marginTop: '6px' } }, t('panel.hint')),
+          report !== null
+            ? h(React.Fragment, null,
+              h('h3', { style: styles.heading }, t('panel.auditTitle')),
+              h('pre', { style: { ...styles.body, margin: '0', maxHeight: '380px' } }, reportLines(report, t).join('\n')),
             )
-            : h(React.Fragment, null,
-              h('label', { style: styles.label, htmlFor: 'memory-title' }, t('panel.titleLabel')),
-              h('input', {
-                id: 'memory-title',
-                style: styles.input,
-                value: view.title,
-                placeholder: t('panel.titlePlaceholder'),
-                onChange: (event: React.ChangeEvent<HTMLInputElement>) => setView({ ...view, title: event.target.value }),
-              }),
-              h('label', { style: styles.label, htmlFor: 'memory-content' }, t('panel.contentLabel')),
-              h('textarea', {
-                id: 'memory-content',
-                style: styles.textarea,
-                value: view.content,
-                placeholder: t('panel.contentPlaceholder'),
-                onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => setView({ ...view, content: event.target.value }),
-              }),
-            ),
+            : view.kind === 'none'
+              ? h('div', { style: styles.empty },
+                h('div', null, t('panel.none')),
+                h('div', { style: { ...styles.label, marginTop: '6px' } }, t('panel.hint')),
+              )
+              : h(React.Fragment, null,
+                h('label', { style: styles.label, htmlFor: 'memory-title' }, t('panel.titleLabel')),
+                h('input', {
+                  id: 'memory-title',
+                  style: styles.input,
+                  value: view.title,
+                  placeholder: t('panel.titlePlaceholder'),
+                  onChange: (event: React.ChangeEvent<HTMLInputElement>) => setView({ ...view, title: event.target.value }),
+                }),
+                h('label', { style: styles.label, htmlFor: 'memory-content' }, t('panel.contentLabel')),
+                h('textarea', {
+                  id: 'memory-content',
+                  style: styles.textarea,
+                  value: view.content,
+                  placeholder: t('panel.contentPlaceholder'),
+                  onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => setView({ ...view, content: event.target.value }),
+                }),
+              ),
         ),
       ),
       h('div', { style: styles.footer },
         h('span', { style: error === null ? styles.status : styles.error },
           error ?? (status === 'loading' ? t('panel.loading') : t('panel.count', { count: entries.length }))),
-        h('button', {
-          type: 'button',
-          style: styles.button,
-          onClick: () => setView({ kind: 'new', title: '', content: '' }),
-        }, t('panel.new')),
-        view.kind === 'edit'
-          ? h('button', { type: 'button', style: styles.button, onClick: remove, disabled: busy }, t('panel.delete'))
-          : null,
-        editable
-          ? h('button', {
-            type: 'button',
-            style: styles.primary,
-            onClick: save,
-            disabled: busy || view.title.trim() === '' || view.content.trim() === '',
-          }, t('panel.save'))
-          : null,
+        report !== null
+          ? h(React.Fragment, null,
+            h('button', { type: 'button', style: styles.button, onClick: () => setReport(null) }, t('panel.back')),
+            report.kind === 'audit'
+              ? h('button', { type: 'button', style: styles.primary, onClick: runSweep, disabled: busy }, t('panel.sweep'))
+              : null,
+          )
+          : h(React.Fragment, null,
+            h('button', { type: 'button', style: styles.button, onClick: openAudit, disabled: busy }, t('panel.tidy')),
+            h('button', {
+              type: 'button',
+              style: styles.button,
+              onClick: () => {
+                setReport(null)
+                setView({ kind: 'new', title: '', content: '' })
+              },
+            }, t('panel.new')),
+            view.kind === 'edit'
+              ? h('button', { type: 'button', style: styles.button, onClick: () => { void remove(false) }, disabled: busy }, t('panel.archive'))
+              : null,
+            view.kind === 'edit'
+              ? h('button', { type: 'button', style: styles.danger, onClick: () => { void remove(true) }, disabled: busy }, t('panel.permanent'))
+              : null,
+            editable
+              ? h('button', {
+                type: 'button',
+                style: styles.primary,
+                onClick: save,
+                disabled: busy || view.title.trim() === '' || view.content.trim() === '',
+              }, t('panel.save'))
+              : null,
+          ),
       ),
     ),
   )
