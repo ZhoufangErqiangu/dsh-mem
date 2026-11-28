@@ -41,6 +41,15 @@ const SUMMARY_MAX_CHARS = 160
 /** Bound for the head of a file inspected to derive an index line. */
 const HEAD_BYTES = 4096
 
+/** How long a reconciled index may be reused across pre-step calls. */
+const INDEX_CACHE_TTL_MS = 5_000
+
+/** Maximum directories retained in the index cache. */
+const INDEX_CACHE_MAX = 64
+
+/** Reconciled index cache keyed by resolved memory directory. */
+const indexCache = new Map<string, { entries: MemoryEntry[]; at: number }>()
+
 export { ARCHIVE_DIR }
 
 /** Default title/summary similarity for write-time duplicate hints. */
@@ -158,6 +167,37 @@ export async function loadIndex(dir: string): Promise<MemoryEntry[]> {
   return entries
 }
 
+/**
+ * Load an index through a short-lived cache.
+ *
+ * `agent/pre-step` runs once per model step, so a turn with several steps would
+ * otherwise re-read every note head each time. Mutations invalidate the entry
+ * explicitly; external edits become visible after the TTL.
+ * @param dir - absolute memory directory.
+ * @returns the reconciled entries.
+ */
+export async function loadIndexCached(dir: string): Promise<MemoryEntry[]> {
+  const key = path.resolve(dir)
+  const hit = indexCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < INDEX_CACHE_TTL_MS) return hit.entries
+  const entries = await loadIndex(dir)
+  if (indexCache.size >= INDEX_CACHE_MAX) {
+    const oldest = indexCache.keys().next().value
+    if (oldest !== undefined) indexCache.delete(oldest)
+  }
+  indexCache.set(key, { entries, at: Date.now() })
+  return entries
+}
+
+/**
+ * Drop one directory's cached index, or clear the whole cache.
+ * @param dir - memory directory; omit to clear every entry.
+ */
+export function invalidateIndexCache(dir?: string): void {
+  if (dir === undefined) indexCache.clear()
+  else indexCache.delete(path.resolve(dir))
+}
+
 async function readHead(file: string): Promise<string> {
   try {
     return (await readBoundedText(file, HEAD_BYTES)).text
@@ -248,6 +288,7 @@ export async function writeMemory(
     if (position >= 0) entries[position] = entry
     else entries.unshift(entry)
     await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    invalidateIndexCache(dir)
     const similar = similarEntries(entries, file, options.duplicateThreshold ?? DEFAULT_DUPLICATE_THRESHOLD)
     return { entry, path: target, entries, similar }
   })
@@ -289,11 +330,13 @@ export async function deleteMemory(
       await rm(target, { force: true })
       const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
       await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+      invalidateIndexCache(dir)
       return { entries, archived: false }
     }
     const archivePath = await archiveLocked(dir, file, options.reason ?? 'manual')
     const entries = (await loadIndex(dir)).filter(entry => entry.file !== file)
     await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    invalidateIndexCache(dir)
     return { entries, archived: true, archivePath }
   })
 }
@@ -320,6 +363,7 @@ export async function restoreMemory(dir: string, archiveName: string): Promise<R
     await forgetArchive(dir, archiveName)
     const entries = await loadIndex(dir)
     await atomicWrite(path.join(dir, INDEX_FILE), renderIndex(entries))
+    invalidateIndexCache(dir)
     return { file: original, entries }
   })
 }

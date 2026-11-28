@@ -16,7 +16,7 @@ import { auditMemory } from './audit.ts'
 import { runDream } from './dream.ts'
 import { tryAcquireCurationLock } from './lock.ts'
 import { finishCuration, markSession } from './state.ts'
-import { deleteMemory, loadIndex, readMemory, restoreMemory, searchMemory, writeMemory } from './store.ts'
+import { deleteMemory, loadIndex, loadIndexCached, readMemory, restoreMemory, searchMemory, writeMemory } from './store.ts'
 import { sweepMemory } from './sweep.ts'
 import { dshHome, findProjectRoot, memoryDir } from './paths.ts'
 import { renderEntry, renderMemoryContext } from './render.ts'
@@ -239,7 +239,7 @@ export function apply(ctx: Context, config?: unknown): void {
 
   const contextFor = async (agent: Agent, signal?: AbortSignal): Promise<RenderedMemory> => {
     const project = await projectFor(agent, signal)
-    const entries = await loadIndex(project.memoryDir)
+    const entries = await loadIndexCached(project.memoryDir)
     return { ...project, ...renderFor(project.projectRoot, entries) }
   }
 

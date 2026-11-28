@@ -23,7 +23,7 @@ import { INDEX_FILE, assertContained, isTopicFileName } from './paths.ts'
 import { boundEntries } from './render.ts'
 import { digestBody } from './similarity.ts'
 import { atomicWrite } from './atomic.ts'
-import { loadIndex, renderIndex } from './store.ts'
+import { invalidateIndexCache, loadIndex, renderIndex } from './store.ts'
 import type { MemoryEntry, SweepArchive, SweepOptions, SweepReport } from './types.ts'
 
 /** Temporary files younger than this are left alone. */
@@ -179,6 +179,7 @@ export async function sweepMemory(dir: string, options: SweepOptions): Promise<S
         await rm(path.join(dir, name), { force: true })
       }
       if (indexRewritten) await atomicWrite(path.join(dir, INDEX_FILE), rendered)
+      invalidateIndexCache(dir)
     }
 
     return {

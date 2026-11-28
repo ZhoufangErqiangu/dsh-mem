@@ -7,7 +7,9 @@ import test from 'node:test'
 import { assertContained, findProjectRoot, isTopicFileName, projectKey } from '../src/paths.ts'
 import {
   deleteMemory,
+  invalidateIndexCache,
   loadIndex,
+  loadIndexCached,
   readMemory,
   renderIndex,
   searchMemory,
@@ -131,6 +133,25 @@ test('searchMemory requires every term on one line and honours the limit', async
   assert.equal(limited.matches.length, 1)
   const none = await searchMemory(dir, 'nonexistent', { limit: 10, maxBytes: 1_000_000 })
   assert.deepEqual(none.matches, [])
+})
+
+test('loadIndexCached reuses the index until a mutation or invalidation', async () => {
+  const dir = await memoryDirectory()
+  await writeMemory(dir, { title: 'Alpha', content: '# Alpha\n\nFirst.' })
+  const first = await loadIndexCached(dir)
+  assert.equal(first.length, 1)
+
+  await writeFile(path.join(dir, 'beta.md'), '# Beta\n\nAdded outside the cache.\n', 'utf8')
+  const cached = await loadIndexCached(dir)
+  assert.equal(cached.length, 1, 'the cached view does not see an outside file yet')
+
+  invalidateIndexCache(dir)
+  const fresh = await loadIndexCached(dir)
+  assert.deepEqual(fresh.map(entry => entry.file).sort(), ['alpha.md', 'beta.md'])
+
+  await writeMemory(dir, { title: 'Gamma', content: '# Gamma\n\nA write invalidates the cache.' })
+  const afterWrite = await loadIndexCached(dir)
+  assert.ok(afterWrite.some(entry => entry.file === 'gamma.md'))
 })
 
 test('readMemory truncation never splits a UTF-8 character', async () => {
