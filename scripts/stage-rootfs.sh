@@ -95,7 +95,7 @@ chmod 0755 "$rootfs/DEBIAN/postinst"
 # `dpkg --verify` and package tooling expect.
 (
   cd "$rootfs"
-  find usr -type f -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums
+  find usr -type f -print0 | LC_ALL=C sort -z | xargs -0 md5sum > DEBIAN/md5sums
 )
 
 # Normalize modes and timestamps so two builds of the same commit produce the
