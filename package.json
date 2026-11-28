@@ -45,7 +45,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "clean": "rm -rf lib",
     "test": "node --test 'tests/*.test.ts'",
-    "deb": "make deb"
+    "deb": "make deb",
+    "push": "git pull && npm version patch && git push && git push --tags"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
