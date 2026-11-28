@@ -17,7 +17,7 @@ pkg="$rootfs$PLUGIN_INSTALL_DIR"
 doc="$rootfs/usr/share/doc/$DEB_PACKAGE"
 
 rm -rf "$rootfs"
-install -d "$pkg/lib" "$pkg/locale" "$doc" "$doc/docs" "$rootfs/DEBIAN"
+install -d "$pkg/lib" "$pkg/locale" "$pkg/docs" "$doc" "$doc/docs" "$rootfs/DEBIAN"
 
 log "staging the plugin package root under $PLUGIN_INSTALL_DIR"
 install -m 0644 \
@@ -28,6 +28,7 @@ install -m 0644 \
   "$ROOT/icon.svg" \
   "$pkg/"
 install -m 0644 "$ROOT"/locale/*.json "$pkg/locale/"
+install -m 0644 "$ROOT"/docs/*.md "$pkg/docs/"
 
 # Ship exactly the runtime the package exposes: the Host bundle and its
 # declarations, plus the browser bundle and its source map. TypeScript sources,

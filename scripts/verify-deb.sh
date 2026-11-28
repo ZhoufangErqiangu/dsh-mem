@@ -44,6 +44,7 @@ doc="$root/usr/share/doc/$DEB_PACKAGE"
 for file in \
   package.json cordis.patch.yml README.md LICENSE icon.svg \
   locale/en.json locale/zh.json \
+  docs/DETAIL.md docs/GLOBAL.md docs/CURATION.md docs/ROADMAP.md \
   lib/index.js lib/index.d.ts lib/client.js lib/client.js.map; do
   [ -f "$pkg/$file" ] || fail "payload is missing $PLUGIN_INSTALL_DIR/$file"
 done
@@ -105,6 +106,25 @@ for (const file of ['lib/index.js', 'lib/index.d.ts', 'lib/client.js', 'cordis.p
 }
 EOF
 pass "package.json identity, entry points, client manifest, and bundle patch"
+
+"$NODE" - "$pkg" <<'EOF' || fail "a locale meta.detail path is missing from the package root"
+const fs = require('node:fs')
+const path = require('node:path')
+const dir = process.argv[2]
+for (const name of ['en.json', 'zh.json']) {
+  const locale = JSON.parse(fs.readFileSync(path.join(dir, 'locale', name), 'utf8'))
+  const detail = locale.meta?.detail
+  if (typeof detail !== 'string' || detail.length === 0) {
+    console.error(`locale/${name}: meta.detail is missing`)
+    process.exit(1)
+  }
+  if (!fs.existsSync(path.join(dir, detail))) {
+    console.error(`locale/${name}: meta.detail does not exist: ${detail}`)
+    process.exit(1)
+  }
+}
+EOF
+pass "locale meta.detail files exist in the package root"
 
 grep -Eq "id:[[:space:]]*memory" "$pkg/cordis.patch.yml" \
   || fail "cordis.patch.yml does not insert the memory row"

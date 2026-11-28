@@ -221,8 +221,8 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
 
 ```json
 {
-  "dir": "/home/alex/.dsh/memory/dsh-mem-xxxx",
-  "projectRoot": "/home/alex/project/dsh-mem",
+  "dir": "/home/user/.dsh/memory/example-xxxx",
+  "projectRoot": "/home/user/project/example",
   "notes": 24,
   "bytes": 48213,
   "truncated": false,

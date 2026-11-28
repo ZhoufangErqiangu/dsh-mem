@@ -9,7 +9,8 @@ What this package installs
 
 The package root contains package.json, cordis.patch.yml, and lib/ (the
 compiled Host entry, its declarations, and the browser bundle), plus locale/,
-icon.svg, and README/LICENSE. That directory is the unit DeepSeek Harness
+icon.svg, README/LICENSE, and docs/. The docs are also copied under
+/usr/share/doc/dsh-memory/docs/. That directory is the unit DeepSeek Harness
 installs: the Web Plugins page ("Add plugin") and `dsh plugin add <path>` both
 read it. The plugin has no runtime npm dependencies; every DeepSeek Harness
 package is type-only at build time and provided by the Host.

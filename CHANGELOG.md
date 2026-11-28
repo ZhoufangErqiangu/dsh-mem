@@ -27,6 +27,9 @@ All notable changes to this plugin are recorded here. The project follows
 - A reproducible Debian package build (`make deb`) that installs the plugin
   package root under `/usr/lib/dsh/plugins/memory`, verifies the payload, and
   publishes the `.deb` and its SHA-256 for `v*` tags.
+- The package root now ships `docs/`, so the locale `meta.detail` link
+  (`docs/DETAIL.md`) resolves on the Plugins page; the verifier checks every
+  locale's detail path.
 - User-global memory at `$DSH_HOME/memory/global/`, enabled by default and
   injected as a second, independently budgeted section before project memory.
 - `scope: 'project' | 'global'` on `memory_write`, `memory_read`,
