@@ -52,6 +52,28 @@ export function isArchiveFileName(name: unknown): name is string {
 }
 
 /**
+ * Read the UTC time encoded in a generated archive file name.
+ * @param name - candidate archive name.
+ * @returns epoch milliseconds, or undefined when the name is not generated.
+ */
+export function archiveCreatedAt(name: string): number | undefined {
+  const match = ARCHIVE_PATTERN.exec(name)
+  if (match === null) return undefined
+  const stamp = match[1]
+  const iso = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(9, 11)}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}Z`
+  const time = Date.parse(iso)
+  if (!Number.isFinite(time)) return undefined
+  const date = new Date(time)
+  const roundTrips = date.getUTCFullYear() === Number(stamp.slice(0, 4))
+    && date.getUTCMonth() === Number(stamp.slice(4, 6)) - 1
+    && date.getUTCDate() === Number(stamp.slice(6, 8))
+    && date.getUTCHours() === Number(stamp.slice(9, 11))
+    && date.getUTCMinutes() === Number(stamp.slice(11, 13))
+    && date.getUTCSeconds() === Number(stamp.slice(13, 15))
+  return roundTrips ? time : undefined
+}
+
+/**
  * Recover the original topic file name from an archive name.
  * @param name - generated archive name.
  * @returns the original `.md` name, or undefined when it would be invalid.

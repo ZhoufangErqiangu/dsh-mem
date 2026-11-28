@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
+import { archiveFileName, rememberArchive } from '../src/archive.ts'
 import { deleteMemory, restoreMemory, writeMemory } from '../src/store.ts'
 import { sweepMemory } from '../src/sweep.ts'
 import type { SweepOptions } from '../src/types.ts'
@@ -24,6 +25,7 @@ function options(overrides: Partial<SweepOptions> = {}): SweepOptions {
   return {
     dryRun: true,
     archiveOverflow: false,
+    archiveMaxAgeDays: 30,
     maxIndexLines: 200,
     maxIndexBytes: 25_000,
     ...overrides,
@@ -76,6 +78,32 @@ test('sweep applies cleanup, keeps the newest duplicate, and removes only old te
   assert.match(index, /beta\.md/u)
   assert.doesNotMatch(index, /alpha\.md|empty\.md/u)
   for (const item of report.archived) await access(item.archivePath)
+})
+
+test('sweep previews and applies archive retention without touching younger archives', async () => {
+  const dir = await memoryDirectory()
+  const oldName = '20200101T000000Z-old-aaaa.md'
+  const newName = archiveFileName('new.md')
+  await mkdir(path.join(dir, 'archive'), { recursive: true })
+  await writeFile(path.join(dir, 'archive', oldName), 'old archive', 'utf8')
+  await writeFile(path.join(dir, 'archive', newName), 'new archive', 'utf8')
+  await rememberArchive(dir, oldName, 'old.md')
+  await rememberArchive(dir, newName, 'new.md')
+
+  const preview = await sweepMemory(dir, options({ dryRun: true }))
+  assert.deepEqual(preview.removedArchives, [oldName])
+  await access(path.join(dir, 'archive', oldName))
+
+  const disabled = await sweepMemory(dir, options({ dryRun: true, archiveMaxAgeDays: 0 }))
+  assert.deepEqual(disabled.removedArchives, [])
+
+  const applied = await sweepMemory(dir, options({ dryRun: false }))
+  assert.deepEqual(applied.removedArchives, [oldName])
+  await assert.rejects(access(path.join(dir, 'archive', oldName)), /ENOENT/u)
+  await access(path.join(dir, 'archive', newName))
+  const manifest = JSON.parse(await readFile(path.join(dir, 'archive', '.manifest.json'), 'utf8')) as Record<string, string>
+  assert.equal(manifest[oldName], undefined)
+  assert.equal(manifest[newName], 'new.md')
 })
 
 test('sweep rewrites a stale index even when no note is archived', async () => {

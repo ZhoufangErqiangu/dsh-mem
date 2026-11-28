@@ -1,0 +1,124 @@
+name: build-deb
+
+# Build the dsh-memory plugin as an architecture-independent Debian package,
+# verify its payload, and attach it to a GitHub release for v* tags. Pull
+# request tests run in ci.yml.
+#
+# The package installs files only: it never edits a user's DSH profile.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: build-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+# Workflow-wide read access; the release job tightens this to contents: write.
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Validate the dispatch input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUT_DEB_REVISION: ${{ github.event.inputs.deb_revision }}
+        run: |
+          revision="${INPUT_DEB_REVISION:-}"
+          if [ -n "$revision" ] && ! printf '%s' "$revision" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+~]*$'; then
+            echo "::error::deb_revision '$revision' is not a valid Debian revision; use letters, digits, '.', '+', '~' (for example 'alex1'), not the upstream version"
+            exit 1
+          fi
+
+      # A release tag must name the exact version in package.json, otherwise the
+      # tag would advertise a build the repository cannot reproduce.
+      - name: Require a v* tag to match package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${version}; tag v${version}"
+            exit 1
+          fi
+
+      - name: Build, test, package and verify
+        env:
+          RESOLVED_DEB_REVISION: ${{ github.event.inputs.deb_revision }}
+        run: |
+          args=()
+          if [ -n "${RESOLVED_DEB_REVISION:-}" ]; then args+=("DEB_REVISION=${RESOLVED_DEB_REVISION}"); fi
+          make "${args[@]}"
+
+      - name: Show package metadata and verify the digest
+        run: |
+          cat build/BUILD-INFO.json
+          dpkg-deb -f dist/*.deb \
+            Package Version Architecture Depends Recommends \
+            X-DSH-Plugin-Name X-DSH-Plugin-Version X-DSH-Plugin-Commit
+          ( cd dist && sha256sum -c ./*.sha256 )
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: |
+            dist/*.deb
+            dist/*.sha256
+            build/BUILD-INFO.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the release metadata
+        uses: actions/checkout@v4
+
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: release
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="$GITHUB_REF_NAME"
+          files=(release/dist/*.deb release/dist/*.sha256)
+          prerelease=()
+          case "$version" in
+            *-*) prerelease+=(--prerelease) ;;
+          esac
+          notes="$(printf 'Debian package for the dsh-memory plugin, version %s (%s).\n\nThe package installs the plugin package root under /usr/lib/dsh/plugins/memory. It is architecture-independent (all) and does not modify any user profile. Enable it with:\n\n  dsh plugin --profile web add /usr/lib/dsh/plugins/memory\n\nDepends: deepseek-harness (>= 0.2.2~rc.5).\n' "$version" "$(dpkg-deb -f release/dist/*.deb Architecture)")"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" \
+              --verify-tag --title "$tag" --notes "$notes" "${prerelease[@]}"
+          fi

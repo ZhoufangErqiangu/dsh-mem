@@ -108,6 +108,7 @@ Project memory for `/work/project`: 3 notes saved in earlier sessions.
 
 - 团队/组织共享记忆、云同步。
 - 全局 Auto Dream、全局审计/清扫、全局 `.state.json`。
+- 全局归档保留清理；`archiveMaxAgeDays` 目前只在项目 `memory_sweep` 中生效。
 - 跨层重复检测与自动合并；v1 只靠“项目优先”和写入提示。
 - 路径作用域规则。
 - 全局笔记的加密或 secret 扫描；继续由写入提示要求不存 secret。

@@ -75,7 +75,7 @@ const zh: LocaleDictionary = {
   'panel.tidy': '整理',
   'panel.auditTitle': '记忆整理',
   'panel.sweep': '执行清扫',
-  'panel.confirmSweep': '执行清扫会归档空笔记和完全重复的笔记；若启用了 archiveOverflow，还会归档最旧笔记。是否继续？',
+  'panel.confirmSweep': '执行清扫会归档空笔记和完全重复的笔记；若启用了 archiveOverflow，还会归档最旧笔记；超过保留天数的归档会被永久删除。是否继续？',
   'panel.back': '返回',
   'panel.report.budget': '{notes} 条笔记 · 索引 {lines}/{maxLines} 行 · {bytes}/{maxBytes} 字节',
   'panel.report.duplicates': '重复 {count} 组',
@@ -85,6 +85,7 @@ const zh: LocaleDictionary = {
   'panel.report.overBudget': '索引仍超出预算。',
   'panel.report.sweep': '清理前 {before} 条 → 清理后 {after} 条；归档 {archived} 个，清理临时文件 {temps} 个。',
   'panel.report.indexRewritten': '索引已重写。',
+  'panel.report.archivesRemoved': '按保留策略永久删除归档 {count} 个：',
 }
 const en: LocaleDictionary = {
   'row.title': 'Project memory',
@@ -128,7 +129,7 @@ const en: LocaleDictionary = {
   'panel.tidy': 'Tidy',
   'panel.auditTitle': 'Memory tidy',
   'panel.sweep': 'Run cleanup',
-  'panel.confirmSweep': 'Cleanup archives empty notes and byte-identical duplicates; with archiveOverflow enabled it also archives the oldest notes. Continue?',
+  'panel.confirmSweep': 'Cleanup archives empty notes and byte-identical duplicates; with archiveOverflow enabled it also archives the oldest notes, and archived notes past the retention window are permanently removed. Continue?',
   'panel.back': 'Back',
   'panel.report.budget': '{notes} notes · index {lines}/{maxLines} lines · {bytes}/{maxBytes} bytes',
   'panel.report.duplicates': 'Duplicate groups: {count}',
@@ -138,6 +139,7 @@ const en: LocaleDictionary = {
   'panel.report.overBudget': 'The index is still over budget.',
   'panel.report.sweep': '{before} → {after} notes; archived {archived}, removed {temps} temp files.',
   'panel.report.indexRewritten': 'The index was rewritten.',
+  'panel.report.archivesRemoved': 'Archives permanently removed by retention: {count}',
 }
 
 const styles = {
@@ -582,6 +584,10 @@ function reportLines(report: ReportState, t: Translate): string[] {
       temps: data.removedTemps.length,
     })]
     for (const item of data.archived) lines.push(`- ${item.file} → ${item.archivePath} (${item.reason})`)
+    if (data.removedArchives.length > 0) {
+      lines.push(t('panel.report.archivesRemoved', { count: data.removedArchives.length }))
+      for (const name of data.removedArchives) lines.push(`- ${name}`)
+    }
     if (data.indexRewritten) lines.push(t('panel.report.indexRewritten'))
     if (data.overBudget) lines.push(t('panel.report.overBudget'))
     return lines

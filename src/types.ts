@@ -78,6 +78,8 @@ export interface Settings {
   maxAuditNotes: number
   /** Whether a sweep may archive the oldest notes to get back under budget. */
   archiveOverflow: boolean
+  /** Days to keep archived notes; 0 keeps them forever. */
+  archiveMaxAgeDays: number
   /** Whether the gated Auto Dream curation pass may run. Defaults to false. */
   curationEnabled: boolean
   /** Minimum hours since the last successful curation. */
@@ -193,6 +195,8 @@ export interface AuditOptions {
 export interface SweepOptions {
   dryRun: boolean
   archiveOverflow: boolean
+  /** Days to keep archived notes; 0 keeps them forever. */
+  archiveMaxAgeDays: number
   maxIndexLines: number
   maxIndexBytes: number
 }
@@ -211,6 +215,8 @@ export interface SweepReport {
   after: { notes: number; bytes: number; lines: number }
   archived: SweepArchive[]
   removedTemps: string[]
+  /** Archive file names permanently removed by the retention policy. */
+  removedArchives: string[]
   indexRewritten: boolean
   overBudget: boolean
 }

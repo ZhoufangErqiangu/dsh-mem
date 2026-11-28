@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -261,6 +261,33 @@ test('an over-budget injection points at the audit and delete tools', async () =
     assert.match(textOf(injected[1]), /over budget/u)
     assert.match(textOf(injected[1]), /memory_audit/u)
     assert.match(textOf(injected[1]), /memory_delete/u)
+  }
+  finally {
+    runtime.restore()
+  }
+})
+
+test('memory_sweep applies the default 30-day archive retention', async () => {
+  const root = await workspace()
+  const home = path.join(root, 'home')
+  const runtime = fakeRuntime(root, home)
+  try {
+    apply(runtime.ctx, {})
+    const sweep = runtime.tools.get('memory_sweep')
+    assert.ok(sweep)
+    const dir = memoryDir(root, home)
+    const oldName = '20200101T000000Z-old-aaaa.md'
+    const archiveDir = path.join(dir, 'archive')
+    await mkdir(archiveDir, { recursive: true })
+    await writeFile(path.join(archiveDir, oldName), 'old archive', 'utf8')
+
+    const preview = await sweep.execute({ dryRun: true }, toolContext(makeAgent())) as { removedArchives: string[] }
+    assert.deepEqual(preview.removedArchives, [oldName])
+    await readFile(path.join(archiveDir, oldName), 'utf8')
+
+    const applied = await sweep.execute({ dryRun: false }, toolContext(makeAgent())) as { removedArchives: string[] }
+    assert.deepEqual(applied.removedArchives, [oldName])
+    await assert.rejects(readFile(path.join(archiveDir, oldName), 'utf8'), /ENOENT/u)
   }
   finally {
     runtime.restore()

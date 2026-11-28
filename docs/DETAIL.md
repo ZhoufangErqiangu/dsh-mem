@@ -40,7 +40,8 @@ The project root is the nearest ancestor holding `.git`, matching how DSH scopes
 switch, the selected layer's index on the left, the note body in an editor on the
 right, with **New**, **Save**, **Archive**, **Delete permanently**, and
 **Tidy**. **Tidy** is shown on the project tab only; it first shows the audit
-report and then runs the deterministic sweep on confirmation. Saving writes
+report and then runs the deterministic sweep on confirmation, including the
+archive retention report. Saving writes
 through the same store functions the tools use, so a note edited in the panel is
 immediately visible to `memory_read`, `memory_search`, and the next session's
 index. Archive moves the note under that layer's `archive/`; permanent deletion
@@ -72,7 +73,7 @@ of view, and the next pre-step injects the updated index.
 | `memory_search` | `query`, optional `limit`, optional `scope` | Case-insensitive line search; every whitespace-separated term must appear on the same line. By default searches project memory first and then global memory when the project result leaves room; every match carries its scope. |
 | `memory_delete` | `file`, optional `permanent`, optional `scope` | Moves the note to that layer's `archive/` and drops its index line. `permanent: true` deletes the file instead. Defaults to the project layer. |
 | `memory_audit` | optional `staleDays`, `threshold`, `limit`, `verbose` | Project-only read-only report: duplicate clusters (identical, near, same-title), stale notes, oversized notes, and index budget pressure. Near-duplicates are reported, never merged. |
-| `memory_sweep` | optional `dryRun`, `archiveOverflow` | Project-only deterministic cleanup: reconcile the index, archive empty and byte-identical duplicate notes, and remove old `.tmp` files. `dryRun` defaults to true; `archiveOverflow` can archive the oldest notes until the index fits 80% of its budget. |
+| `memory_sweep` | optional `dryRun`, `archiveOverflow` | Project-only deterministic cleanup: reconcile the index, archive empty and byte-identical duplicate notes, remove old `.tmp` files, and permanently delete archived notes older than `archiveMaxAgeDays`. `dryRun` defaults to true; `archiveOverflow` can archive the oldest notes until the index fits 80% of its budget. |
 | `memory_restore` | `archive`, optional `scope` | Move one generated archive file back to that layer's top level and rebuild the index. A name collision is refused. |
 | `memory_dream` | none | Project-only: run one explicit curation pass immediately in a restricted child agent. Uses one model turn. The automatic pass is opt-in; this is its manual equivalent. |
 
@@ -97,6 +98,7 @@ The index injection also tells the agent when saving is appropriate and that not
     oversizeBytes: 16384
     maxAuditNotes: 200
     archiveOverflow: false
+    archiveMaxAgeDays: 30
     curationEnabled: false
     curationMinHours: 24
     curationMinSessions: 5
@@ -107,7 +109,7 @@ The index injection also tells the agent when saving is appropriate and that not
     curationMaxTokens: 4096
 ```
 
-Every field is optional. The project index defaults match Claude Code's `MEMORY.md` budget (200 lines or 25 KiB, whichever comes first); broader notes are dropped before the most recent ones. The user-global layer has a separate smaller budget (40 lines or 6000 bytes by default); when it has no notes, no global section is rendered and its budget is unused.
+Every field is optional. The project index defaults match Claude Code's `MEMORY.md` budget (200 lines or 25 KiB, whichever comes first); broader notes are dropped before the most recent ones. The user-global layer has a separate smaller budget (40 lines or 6000 bytes by default); when it has no notes, no global section is rendered and its budget is unused. Archived notes are kept for `archiveMaxAgeDays` (default 30); `0` keeps them forever.
 
 The harness home is process policy (`DSH_HOME`), not row configuration.
 
@@ -118,7 +120,8 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 - **Global memory has no curation yet.** `memory_audit`, `memory_sweep`, and `memory_dream` are project-only, and the panel's Tidy action is hidden on the global tab. Global notes can still be created, edited, archived, permanently deleted, restored, and searched.
 - **No read fallback.** `memory_read` and `memory_delete` act on the selected scope only; a missing file returns an explicit error that names the scope and suggests `scope: 'global'` when relevant.
 - **Auto Dream is opt-in.** When `curationEnabled` is true and both the wall-clock and session gates pass, one restricted child agent consolidates project notes; `memory_dream` runs the same pass on demand. It is off by default, uses one model turn, has a project lock and timeout, and never permanently deletes.
-- **Deterministic cleanup is conservative.** `memory_sweep` archives only empty notes, byte-identical duplicates, and (when enabled) the oldest notes over budget. Near-duplicates and stale notes remain report-only.
+- **Deterministic cleanup is conservative.** `memory_sweep` archives only empty notes, byte-identical duplicates, and (when enabled) the oldest notes over budget. Near-duplicates and stale notes remain report-only. Archived notes older than `archiveMaxAgeDays` (default 30, `0` keeps them forever) are permanently removed only when the sweep is applied, not during a dry run or an Auto Dream pass.
+- **Global archive retention is not exposed yet.** The global layer has no sweep, so `archiveMaxAgeDays` currently prunes project archives only; `global/archive/` must be cleaned manually.
 - **No watcher.** The index is recomposed at the start of each turn, so an external edit — in either layer — becomes visible on the next turn, not immediately.
 - **The panel's delete confirmation is the browser's native `window.confirm`**, and the dialog does not trap Tab focus; Escape and the backdrop close it.
 - **`workspace-write` cannot write these files.** The store is written by the plugin, outside the sandboxed `ctx.fs` fence; the model's own `write`/`edit` tools cannot reach it, which is why `memory_write` exists.
@@ -127,6 +130,6 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 
 Sources are TypeScript under `src/` and are built with tsdown into `lib/` (ESM host bundle plus the browser client factory). The package exports point at `lib/`, so run `npm run build` before installing or reloading the plugin from a checkout.
 
-`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, the store and curation locks, soft delete and archiving, restore, deterministic sweep, write-time similarity hints, audit duplicate/stale/oversized detection, the Auto Dream clock and gate, the restricted curation child, the pre-step injection contract, UTF-8 boundary reads, the index cache, private file modes, and the user-global scope (paths, dual-section injection, scope-aware read/search/delete, write acknowledgement, disabled mode, and the panel route).
+`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, the store and curation locks, soft delete and archiving, restore, deterministic sweep including archive retention, write-time similarity hints, audit duplicate/stale/oversized detection, the Auto Dream clock and gate, the restricted curation child, the pre-step injection contract, UTF-8 boundary reads, the index cache, private file modes, and the user-global scope (paths, dual-section injection, scope-aware read/search/delete, write acknowledgement, disabled mode, and the panel route).
 
 At runtime, create a memory in one session and ask for it in a new session; this is described in the repository README.

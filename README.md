@@ -38,6 +38,27 @@ npm run build
 
 然后在 DSH 的 **Plugins → Add plugin** 里选择本目录，或者让 agent 用 `plugin_manager` 的 `install_bundle` 安装。安装后在新会话里验证。
 
+### Debian 包
+
+`make deb` 构建并验证一个架构无关（`all`）的 Debian 包：
+
+```sh
+make deb
+sudo apt install ./dist/dsh-memory_*_all.deb
+```
+
+包依赖 `deepseek-harness (>= 0.2.2~rc.5)`，把插件包根安装到
+`/usr/lib/dsh/plugins/memory`，文档安装到 `/usr/share/doc/dsh-memory`。它不修改任何用户 profile，也不安装服务。启用仍然按用户执行：
+
+```sh
+dsh plugin --profile web add /usr/lib/dsh/plugins/memory
+systemctl --user restart dsh-web     # 如果 profile 没有热重载
+```
+
+也可以继续用 **Plugins → Add plugin** 选择这个目录。升级会原地替换目录，profile 里的链接保持不变；卸载前先用 `dsh plugin --profile web remove @local/dsh-memory` 清掉 profile 里的 bundle。
+
+`release.conf` 保存包名、apt revision、`deepseek-harness` 下限和安装路径；`make print-config` 打印解析后的值；`make DEB_REVISION=alex1 deb` 可换 revision。CI 的 `make build` 会跑 `npm ci`，本地已装好依赖时可以用 `SKIP_INSTALL=1 make deb` 复用现有 `node_modules`。
+
 ## 构建与开发
 
 ```sh
@@ -45,13 +66,15 @@ npm install
 npm run build      # tsdown：lib/index.js（Host）+ lib/client.js（Client）
 npm run typecheck  # tsc --noEmit，检查 src/ 与 tests/
 npm test           # node --test tests/*.test.ts
+make deb           # 构建、测试、打包并验证 deb
 ```
 
-GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和构建，见 `.github/workflows/ci.yml`。
+构建和测试需要 Node >= 24.9（与 DSH Host 的要求一致）。GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和构建，见 `.github/workflows/ci.yml`；`v*` tag 或手动触发会跑 `.github/workflows/build-deb.yml` 构建并发布 deb。
 
 - `src/index.ts`、`src/paths.ts`、`src/render.ts`、`src/store.ts`、`src/audit.ts`、`src/lock.ts`、`src/similarity.ts`：Host 半插件（工具、注入、面板路由、审计、写锁、相似度）
 - `src/client/index.ts`、`src/client/contracts.ts`：Client 半插件（聊天行、`/memory` 面板）；`tsdown` 把入口包成 `window.__ModuleLoader__.load` 的 CJS 工厂，React 从页面模块表解析
 - `lib/` 是构建产物，不入库；安装包只包含 `lib/`，不含 `src/`
+- `Makefile`、`release.conf`、`scripts/`、`packaging/`：Debian 打包与验证
 
 ## 配置
 
@@ -72,6 +95,7 @@ GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和
     oversizeBytes: 16384      # 超过多少字节报告为超长
     maxAuditNotes: 200        # 一次 memory_audit 最多检查多少篇
     archiveOverflow: false    # 清扫时是否自动归档超预算的最旧笔记
+    archiveMaxAgeDays: 30     # 归档保留天数；0 表示永久保留
     curationEnabled: false    # Auto Dream 总开关，默认关闭
     curationMinHours: 24      # 距上次成功整理至少多少小时
     curationMinSessions: 5    # 距上次成功整理至少多少个会话
@@ -94,7 +118,7 @@ GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和
 npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话、UTF-8 边界、索引缓存、文件权限、项目/全局双段注入与 scope 工具语义，以及 pre-step 注入契约。当前 71 项。
+覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话、UTF-8 边界、索引缓存、文件权限、项目/全局双段注入与 scope 工具语义，以及 pre-step 注入契约。当前 73 项。
 
 测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 
@@ -108,7 +132,7 @@ Client 半插件提供两块：
 ## 整理
 
 - `memory_audit`：只读报告，列出近似重复、过期、超长和预算压力。
-- `memory_sweep`：默认 dry-run；`dryRun: false` 时归档空笔记和完全重复的笔记、清理旧临时文件、重写索引；`archiveOverflow: true` 时还会归档最旧的笔记直到索引回到 80% 预算。
+- `memory_sweep`：默认 dry-run；`dryRun: false` 时归档空笔记和完全重复的笔记、清理旧临时文件、重写索引，并永久删除超过 `archiveMaxAgeDays`（默认 30 天，0 表示永久保留）的归档；`archiveOverflow: true` 时还会归档最旧的笔记直到索引回到 80% 预算。
 - `memory_restore`：按归档文件名把笔记移回顶层，目标同名时拒绝覆盖。
 - 面板“整理”提供同样的审计报告和执行清扫入口。
 
@@ -129,6 +153,8 @@ Client 半插件提供两块：
 - 已有手动审计（`memory_audit`）、软删除（`memory_delete`）、确定性清扫（`memory_sweep`）、恢复（`memory_restore`）和可选的 Auto Dream；这些都作用于项目层
 - Auto Dream 默认关闭；开启后需要同时满足 `curationMinHours` 和 `curationMinSessions` 才会触发，单次有超时和项目级锁
 - 近似重复只报告，不自动合并；只有空笔记和正文完全相同的笔记会在清扫中被归档
+- 归档默认保留 30 天；只有在你显式执行清扫（`dryRun: false` 或面板“整理”）时才会永久删除超期归档，Auto Dream 不会永久删除任何笔记
+- 全局层暂不支持清扫，因此 `archiveMaxAgeDays` 目前只清理项目层归档；全局 `global/archive/` 需要手动处理
 - 面板的“归档”默认软删除，“永久删除”需要二次确认
 - 索引在每轮开始时重组，外部编辑下一轮才可见
 
@@ -136,4 +162,4 @@ Client 半插件提供两块：
 
 ## 规划
 
-整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）、M2（确定性清扫、恢复、面板整理）、M3（Auto Dream、`memory_dream`）和 M4（性能、CI、文档收尾）已实现；P2 的用户全局记忆已按 [GLOBAL.md](./docs/GLOBAL.md) 实现，召回维持字面检索，标签/链接和 watcher 仍未做。
+整理（curation）与 Auto Dream 的设计、里程碑和待定决策见 `docs/CURATION.md` 与 `docs/ROADMAP.md`。M1（写锁、软删除、审计、相似提示、预算提示）、M2（确定性清扫、恢复、面板整理）、M3（Auto Dream、`memory_dream`）和 M4（性能、CI、文档收尾）已实现；P2 的用户全局记忆已按 [GLOBAL.md](./docs/GLOBAL.md) 实现，归档保留（`archiveMaxAgeDays`，默认 30 天）已加入 `memory_sweep`；召回维持字面检索，标签/链接和 watcher 仍未做。

@@ -1,7 +1,7 @@
 # 路线图：从基础记忆到可维护的记忆
 
 - 日期：2026-11-28
-- 当前版本：`0.4.0`（TypeScript + tsdown，测试 71 项通过）
+- 当前版本：`0.5.0`（TypeScript + tsdown，测试 73 项通过）
 - 相关：[CURATION.md](./CURATION.md)（整理功能详细设计）、[GLOBAL.md](./GLOBAL.md)（用户全局记忆）、[DETAIL.md](./DETAIL.md)
 
 ## 1. 基线
@@ -31,6 +31,8 @@
 **M4 已完成（2026-11-28）**：`memory_search` 改为按 UTF-8 字节计预算；有界读取不再切断多字节字符；`pre-step` 使用短 TTL 索引缓存并在写/删/恢复/清扫时失效；新增 GitHub Actions CI、CHANGELOG；新建目录/文件使用 `0700`/`0600`。61 项测试、typecheck、build 通过。
 
 **P2 全局记忆 G1/G2 已完成（2026-11-28）**：用户全局目录 `$DSH_HOME/memory/global/`、默认开启、独立预算；注入先全局后项目，digest/写确认覆盖两层；五个工具增加 `scope`（默认项目，全局显式）；`memory_read` / `memory_delete` 不回退，找不到显式报错；面板增加项目/全局切换；全局层暂不做整理。测试增至 71 项，`docs/GLOBAL.md` 记录决策。
+
+**归档保留已完成（2026-11-28）**：新增 `archiveMaxAgeDays`（默认 30 天，0 表示永久保留）；`memory_sweep` dry-run 报告超期归档，应用时永久删除并清理 `archive/.manifest.json` 条目；`SweepReport` 增加 `removedArchives`，面板 Tidy 报告同步展示。测试增至 73 项。
 
 **M2 现场验收（2026-11-28）**：`memory_sweep` dry-run 报 3 → 2 条、预演归档 1 条；`dryRun: false` 归档了重复笔记并重写索引；`archive/.manifest.json` 记录了精确原文件名；`memory_restore` 恢复成功并清掉 manifest 条目；随后永久删除临时笔记，索引回到 1 条。`/api/memory` 对非 owner 的 curl 返回 401，符合 owner-only 设计；面板点击仍需人工看一眼。
 
@@ -86,7 +88,8 @@
 | 文档同步 | ✅ 本轮的 README/DETAIL/ROADMAP 已同步 |
 | 客户端测试 | 面板路由有测试，Client 渲染/交互没有；仍待做 |
 | 文件权限 | ✅ 新建目录 0700 / 文件 0600 |
-| 归档清理 | 归档只增不减，后续需要保留策略；仍待做 |
+| 归档清理 | ✅ `archiveMaxAgeDays` 默认 30 天；`memory_sweep` 应用时永久删除超期归档并清理 manifest，dry-run 只报告 |
+| Debian 包 | ✅ `make deb` 构建 `dsh-memory_<version>-<rev>_all.deb`，安装到 `/usr/lib/dsh/plugins/memory`，含 control/postinst/README/copyright 与结构+组合验证 |
 
 ## 4. 里程碑
 
@@ -106,8 +109,8 @@
 | 版本 | 内容 | 兼容性 |
 |---|---|---|
 | `0.4.0` | M1 + M2 + M3：审计、软删除/恢复、确定性清扫、面板整理、Auto Dream（默认关闭） | 索引格式不变；旧目录自动兼容；新增配置都有默认值 |
-| `0.5.0` | M4：性能、编码 bug、CI、文档收尾（代码已完成，版本号待发布时统一 bump） | 行为不变 |
-| `0.6.0` | P2 用户全局记忆：`global/`、双段注入、scope 工具、面板切换（代码已完成，版本号待发布时统一 bump） | 项目目录和索引格式不变；全局层可关闭 |
+| `0.5.0` | M4 + P2 用户全局记忆：性能/编码/CI、全局层、双段注入、scope 工具、面板切换（版本号已 bump，发布内容待统一整理） | 项目目录和索引格式不变；全局层可关闭 |
+| `0.6.0` | 归档保留（`archiveMaxAgeDays`）与 P3 收尾（代码已完成，版本号待发布时统一 bump） | 新增配置有默认值；旧归档目录自动兼容 |
 
 每个版本都要求：`npm run build`、`npm run typecheck`、`npm test` 通过；新工具的描述和 schema 在 `DETAIL.md` 更新；README 的“已知边界”同步删改。
 
@@ -117,12 +120,12 @@
 - 多用户/多租户记忆，团队/组织共享记忆。
 - 云同步、加密存储。
 - 全局 Auto Dream、全局审计/清扫（v1 只保留项目层整理）。
-- 自动永久删除任何笔记。
+- 自动永久删除任何笔记（归档保留清理只在 `memory_sweep` 显式应用时发生，Auto Dream 不删除）。
 - 在未验证工具限制的情况下创建可执行 shell 的整理子会话。
 
 ## 7. 建议的下一步
 
 1. 已确认：软删除、Auto Dream 默认关闭、近似重复只报告。剩余待定项（模型路由、归档溢出）见 [CURATION.md](./CURATION.md) 第 13 节。
 2. P2 已收敛：召回维持主模型读索引 + 字面检索；用户全局记忆 G1/G2 已完成；路径规则明确不做；标签/链接和 watcher 暂缓。
-3. 剩余是 P3 的 Client 渲染测试、归档保留策略，以及全局记忆的现场验收（写一条全局偏好，新建会话确认两段注入；面板切换项目/全局）。
+3. 剩余是 P3 的 Client 渲染测试，以及全局记忆的现场验收（面板切换项目/全局仍需人工点一遍）。
 4. 自动门槛的现场触发仍未开启验证；可用较低的 `curationMinHours`/`curationMinSessions` 在测试项目上验收。

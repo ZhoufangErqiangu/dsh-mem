@@ -6,6 +6,7 @@
  * - archive empty notes;
  * - archive byte-identical duplicate notes, keeping the newest;
  * - remove abandoned `*.tmp` files older than an hour;
+ * - permanently remove archived notes older than `archiveMaxAgeDays`;
  * - optionally archive the oldest notes until the rendered index fits 80% of
  *   its budget, but only when `archiveOverflow` is enabled.
  *
@@ -17,7 +18,16 @@
 
 import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { ARCHIVE_DIR, archiveFileName, archivePath as archivePathOf, rememberArchive } from './archive.ts'
+import {
+  ARCHIVE_DIR,
+  archiveCreatedAt,
+  archiveFileName,
+  archivePath as archivePathOf,
+  isArchiveFileName,
+  readArchiveManifest,
+  rememberArchive,
+  writeArchiveManifest,
+} from './archive.ts'
 import { withStoreLock } from './lock.ts'
 import { INDEX_FILE, assertContained, isTopicFileName } from './paths.ts'
 import { boundEntries } from './render.ts'
@@ -28,6 +38,9 @@ import type { MemoryEntry, SweepArchive, SweepOptions, SweepReport } from './typ
 
 /** Temporary files younger than this are left alone. */
 const TEMP_MAX_AGE_MS = 60 * 60 * 1000
+
+/** Milliseconds in one retention day. */
+const DAY_MS = 24 * 60 * 60 * 1000
 
 /** A note read for the sweep. */
 interface NoteFile {
@@ -86,6 +99,28 @@ async function oldTempFiles(dir: string, now: number): Promise<string[]> {
   return found
 }
 
+/** Find archived notes past the retention window. */
+async function oldArchives(dir: string, now: number, maxAgeDays: number): Promise<string[]> {
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) return []
+  const cutoff = now - maxAgeDays * DAY_MS
+  let names: string[]
+  try {
+    names = (await readdir(path.join(dir, ARCHIVE_DIR))).filter(isArchiveFileName)
+  }
+  catch (error) {
+    if (hasErrnoCode(error, 'ENOENT')) return []
+    throw error
+  }
+  const found: string[] = []
+  for (const name of names.sort()) {
+    const info = await stat(path.join(dir, ARCHIVE_DIR, name)).catch(() => undefined)
+    if (info?.isFile() !== true) continue
+    const created = archiveCreatedAt(name) ?? info.mtimeMs
+    if (created < cutoff) found.push(name)
+  }
+  return found
+}
+
 /** Archive one file, or only predict the path in a dry run. */
 async function archiveNote(dir: string, file: string, dryRun: boolean): Promise<string> {
   const target = archivePathOf(dir, archiveFileName(file))
@@ -99,7 +134,7 @@ async function archiveNote(dir: string, file: string, dryRun: boolean): Promise<
 /**
  * Sweep one project's memory.
  * @param dir - absolute memory directory.
- * @param options - dry-run flag, overflow policy, and index budget.
+ * @param options - dry-run flag, overflow and retention policy, and index budget.
  * @returns the before/after counts and every predicted or performed action.
  */
 export async function sweepMemory(dir: string, options: SweepOptions): Promise<SweepReport> {
@@ -151,6 +186,7 @@ export async function sweepMemory(dir: string, options: SweepOptions): Promise<S
     }
 
     const removedTemps = await oldTempFiles(dir, now)
+    const removedArchives = await oldArchives(dir, now, options.archiveMaxAgeDays)
     const remainingEntries = remaining.map(note => note.entry)
     const rendered = renderIndex(remainingEntries)
     const currentIndex = await readIndexText(dir)
@@ -178,6 +214,19 @@ export async function sweepMemory(dir: string, options: SweepOptions): Promise<S
       for (const name of removedTemps) {
         await rm(path.join(dir, name), { force: true })
       }
+      if (removedArchives.length > 0) {
+        for (const name of removedArchives) {
+          await rm(path.join(dir, ARCHIVE_DIR, name), { force: true })
+        }
+        const manifest = await readArchiveManifest(dir)
+        let manifestChanged = false
+        for (const name of removedArchives) {
+          if (manifest[name] === undefined) continue
+          delete manifest[name]
+          manifestChanged = true
+        }
+        if (manifestChanged) await writeArchiveManifest(dir, manifest)
+      }
       if (indexRewritten) await atomicWrite(path.join(dir, INDEX_FILE), rendered)
       invalidateIndexCache(dir)
     }
@@ -188,6 +237,7 @@ export async function sweepMemory(dir: string, options: SweepOptions): Promise<S
       after,
       archived: archives,
       removedTemps,
+      removedArchives,
       indexRewritten,
       overBudget,
     }

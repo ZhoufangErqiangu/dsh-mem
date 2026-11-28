@@ -66,6 +66,7 @@ const DEFAULT_DUPLICATE_THRESHOLD = 0.6
 const DEFAULT_OVERSIZE_BYTES = 16_384
 const DEFAULT_MAX_AUDIT_NOTES = 200
 const DEFAULT_ARCHIVE_OVERFLOW = false
+const DEFAULT_ARCHIVE_MAX_AGE_DAYS = 30
 const DEFAULT_CURATION_ENABLED = false
 const DEFAULT_CURATION_MIN_HOURS = 24
 const DEFAULT_CURATION_MIN_SESSIONS = 5
@@ -156,6 +157,7 @@ function normalizeSettings(config?: unknown): Settings {
     oversizeBytes: boundedInteger(row.oversizeBytes, DEFAULT_OVERSIZE_BYTES, 1024),
     maxAuditNotes: Math.min(boundedInteger(row.maxAuditNotes, DEFAULT_MAX_AUDIT_NOTES, 1), 1000),
     archiveOverflow: row.archiveOverflow === true,
+    archiveMaxAgeDays: boundedInteger(row.archiveMaxAgeDays, DEFAULT_ARCHIVE_MAX_AGE_DAYS, 0),
     curationEnabled: row.curationEnabled === true,
     curationMinHours: boundedInteger(row.curationMinHours, DEFAULT_CURATION_MIN_HOURS, 1),
     curationMinSessions: boundedInteger(row.curationMinSessions, DEFAULT_CURATION_MIN_SESSIONS, 1),
@@ -834,7 +836,7 @@ export function apply(ctx: Context, config?: unknown): void {
 
   const sweepTool: ToolDefinition = {
     name: 'memory_sweep',
-    description: 'Preview or apply deterministic memory cleanup: reconcile the index, archive empty notes, archive exact duplicate notes (keeping the newest), and remove stale temporary files. Near-duplicates are never merged here. Defaults to a dry run; pass dryRun: false to apply.',
+    description: 'Preview or apply deterministic memory cleanup: reconcile the index, archive empty notes, archive exact duplicate notes (keeping the newest), remove stale temporary files, and permanently remove archived notes older than the configured archiveMaxAgeDays. Near-duplicates are never merged here. Defaults to a dry run; pass dryRun: false to apply.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -853,7 +855,7 @@ export function apply(ctx: Context, config?: unknown): void {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['dryRun', 'before', 'after', 'archived', 'removedTemps', 'indexRewritten', 'overBudget'],
+        required: ['dryRun', 'before', 'after', 'archived', 'removedTemps', 'removedArchives', 'indexRewritten', 'overBudget'],
         properties: {
           dryRun: { type: 'boolean' },
           before: {
@@ -890,6 +892,7 @@ export function apply(ctx: Context, config?: unknown): void {
             },
           },
           removedTemps: { type: 'array', items: { type: 'string' } },
+          removedArchives: { type: 'array', items: { type: 'string' } },
           indexRewritten: { type: 'boolean' },
           overBudget: { type: 'boolean' },
         },
@@ -904,6 +907,11 @@ export function apply(ctx: Context, config?: unknown): void {
           `Index: ${output.after.lines} entries${output.overBudget ? ' (still over budget)' : ''}. ${output.removedTemps.length} ${tempNoun} ${output.dryRun ? 'would be' : 'were'} removed; ${output.archived.length} ${archiveNoun} ${verb}.`,
         ]
         for (const item of output.archived) lines.push(`- ${item.file} -> ${item.archivePath} (${item.reason})`)
+        if (output.removedArchives.length > 0) {
+          const noun = output.removedArchives.length === 1 ? 'archive' : 'archives'
+          lines.push(`${output.removedArchives.length} old ${noun} ${output.dryRun ? 'would be' : 'were'} permanently removed by the retention policy.`)
+          for (const name of output.removedArchives) lines.push(`- ${name} (retention)`)
+        }
         if (output.indexRewritten) lines.push(`${output.dryRun ? 'The index would be rewritten.' : 'The index was rewritten.'}`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -920,6 +928,7 @@ export function apply(ctx: Context, config?: unknown): void {
       return sweepMemory(project.memoryDir, {
         dryRun: row.dryRun !== false,
         archiveOverflow,
+        archiveMaxAgeDays: settings.archiveMaxAgeDays,
         maxIndexLines: settings.maxIndexLines,
         maxIndexBytes: settings.maxIndexBytes,
       })
@@ -1214,6 +1223,7 @@ export function apply(ctx: Context, config?: unknown): void {
               value: await sweepMemory(dir, {
                 dryRun: row.dryRun !== false,
                 archiveOverflow,
+                archiveMaxAgeDays: settings.archiveMaxAgeDays,
                 maxIndexLines: settings.maxIndexLines,
                 maxIndexBytes: settings.maxIndexBytes,
               }),

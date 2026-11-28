@@ -1,0 +1,89 @@
+dsh-memory — Debian/Ubuntu package notes
+========================================
+
+What this package installs
+--------------------------
+  /usr/lib/dsh/plugins/memory/   the plugin package root (lib/)
+  /usr/share/doc/dsh-memory/     this note, copyright, changelog,
+                                 BUILD-INFO.json, and docs/
+
+The package root contains package.json, cordis.patch.yml, and lib/ (the
+compiled Host entry, its declarations, and the browser bundle), plus locale/,
+icon.svg, and README/LICENSE. That directory is the unit DeepSeek Harness
+installs: the Web Plugins page ("Add plugin") and `dsh plugin add <path>` both
+read it. The plugin has no runtime npm dependencies; every DeepSeek Harness
+package is type-only at build time and provided by the Host.
+
+The package does not modify user profiles and does not start a service. It
+also does not install Node.js or DeepSeek Harness itself; it Depends on
+deepseek-harness (>= @DSH_MIN_VERSION@).
+
+Enabling the plugin (per user, not with sudo)
+---------------------------------------------
+  dsh plugin --profile web add /usr/lib/dsh/plugins/memory
+
+Or, in the Web UI: Plugins -> Add plugin -> enter
+/usr/lib/dsh/plugins/memory.
+
+Installation enables the bundle in the profile. A running Host picks it up
+through HMR when the profile uses live reload; otherwise restart the Web UI:
+
+  systemctl --user restart dsh-web
+
+Do not run these commands with sudo: the profile belongs to the user, and
+root-owned files under ~/.dsh break the user service. A Host plugin runs
+in-process with that user's privileges and can read its credentials, so
+install only packages you trust.
+
+Usage
+-----
+After enabling and restarting, the agent gets eight memory tools and every
+session receives the project memory index. With the Web client, each injection
+renders as its own Chat row, and `/memory` opens the management panel with a
+Project / Global switch.
+
+  memory_write, memory_read, memory_search, memory_delete,
+  memory_audit, memory_sweep, memory_restore, memory_dream
+
+Project notes live in $DSH_HOME/memory/<project>-<hash>/; user-global notes
+live in $DSH_HOME/memory/global/. Archived notes are kept for 30 days by
+default (`archiveMaxAgeDays`); `memory_sweep` reports them in a dry run and
+removes them only when applied.
+
+The row configuration in the profile's cordis.patch.yml accepts the index
+budgets, search limits, audit thresholds, archive retention, and Auto Dream
+settings. See /usr/share/doc/dsh-memory/docs/DETAIL.md.
+
+Upgrading
+---------
+`apt install` replaces the directory in place. The profile links to the
+directory, not to a version, so no reinstall is needed; restart the Web UI to
+load the new code (or let HMR reload it).
+
+Removing
+--------
+Remove the bundle from every profile that enabled it first:
+
+  dsh plugin --profile web remove @PLUGIN_NAME@
+
+Then remove the package:
+
+  sudo apt remove dsh-memory
+
+Removing the package first leaves a dangling link in the profile. DeepSeek
+Harness then reports the bundle as skipped, and the `dsh plugin remove`
+command above still clears it. `apt purge` removes only the files listed in
+the package; memory notes under ~/.dsh/memory/ are user data and are not
+touched.
+
+License
+-------
+MIT. The full text is installed as
+/usr/share/doc/dsh-memory/copyright and /usr/share/doc/dsh-memory/LICENSE.
+
+Source
+------
+Upstream: @PLUGIN_REPO_URL@
+The exact version and commit used for this build are recorded in
+/usr/share/doc/dsh-memory/BUILD-INFO.json and in the package's
+X-DSH-Plugin-Commit control field.

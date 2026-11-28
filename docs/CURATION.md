@@ -33,7 +33,7 @@
 - 语义检索、向量索引、BM25。整理只处理“已有笔记的健康度”，不改变召回方式。
 - 用户级全局记忆、按路径生效的规则树。作用域扩展单独决策；本设计只处理单项目。
 - 自动合并近似笔记。相似度只能作为候选，最终由模型或人判断。
-- 自动永久删除。任何自动化路径都只能归档。
+- 自动永久删除。Auto Dream 等自动化路径只能归档；超期归档清理只在显式 `memory_sweep` 应用时发生。
 - 触碰 `CLAUDE.md` / `AGENTS.md` 指令链。按既定的作用域划分，指令层属于 `dsh-agent-instructions`。
 
 ## 3. 参考行为
@@ -297,7 +297,7 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
 }
 ```
 
-`dryRun` 默认 `true`，面板在用户确认后传 `false`。`archiveOverflow` 默认取配置，默认 `false`。
+`dryRun` 默认 `true`，面板在用户确认后传 `false`。`archiveOverflow` 默认取配置，默认 `false`。`archiveMaxAgeDays` 来自插件配置（默认 30 天，`0` 表示永久保留），不通过工具参数传入。
 
 规则：
 
@@ -308,6 +308,7 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
 | 空笔记（0 字节或只有空白） | 归档，原因 `empty` | 是 |
 | 正文完全相同的笔记 | 保留 mtime 最新的一篇，其余归档，原因 `duplicate` | 是 |
 | `*.tmp` 且超过 1 小时 | 删除 | 是 |
+| `archive/` 中超过 `archiveMaxAgeDays` 天的归档 | 永久删除，并清理 manifest 条目 | 是（默认 30 天；0 关闭） |
 | 索引超过预算 | 按 mtime 从旧到新归档，直到回到 80% 预算 | 否（`archiveOverflow`） |
 | 近似重复 | 只报告，不处理 | — |
 | 过期笔记 | 只报告，不处理 | — |
@@ -323,6 +324,7 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
     { "file": "old.md", "archivePath": "...", "reason": "duplicate" }
   ],
   "removedTemps": ["MEMORY.md.123.tmp"],
+  "removedArchives": ["20260101T000000Z-old-a1b2.md"],
   "indexRewritten": true,
   "overBudget": false
 }
@@ -330,6 +332,7 @@ Archived testing-conventions.md to archive/20261127T190000-testing-conventions-a
 
 - `dryRun: true` 时只计算报告，不移动/删除任何文件，但可以报告将要执行的动作。
 - 清扫结束后重写 `MEMORY.md`，保持现有顺序；新发现的文件追加在末尾。
+- 归档保留按归档文件名里的 UTC 时间计算（手工放进 `archive/` 的旧文件退回 mtime）；dry-run 在 `removedArchives` 中列出将删除的文件，应用后再清理对应的 manifest 条目。
 - 归档溢出只在显式开启时执行，避免自动拿走用户可能依赖的旧笔记。
 
 `memory_restore`：
@@ -491,6 +494,7 @@ Rules:
     oversizeBytes: 16384
     maxAuditNotes: 200
     archiveOverflow: false
+    archiveMaxAgeDays: 30    # 归档保留天数；0 = 永久保留
     # Auto Dream（M3）
     curationEnabled: false
     curationMinHours: 24
@@ -557,6 +561,7 @@ export interface AuditReport {
 export interface SweepOptions {
   dryRun: boolean
   archiveOverflow: boolean
+  archiveMaxAgeDays: number
   maxIndexLines: number
   maxIndexBytes: number
 }
@@ -567,6 +572,7 @@ export interface SweepReport {
   after: { notes: number; bytes: number; lines: number }
   archived: Array<{ file: string; archivePath: string; reason: 'duplicate' | 'empty' | 'overflow' }>
   removedTemps: string[]
+  removedArchives: string[]
   indexRewritten: boolean
   overBudget: boolean
 }
@@ -610,7 +616,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 - **权限**：记忆可能包含敏感信息。M4 已让新建目录使用 `0700`、笔记/归档文件使用 `0600`（Windows 忽略）；不改变已有文件的权限。
 - **提示注入**：笔记是模型写的，可能包含恶意指令。注入文本已有“reference, not instructions”的声明；整理提示词再次声明，并要求只调用记忆工具。
 - **工具限制**：M3 的子会话必须在 spike 中确认只能使用记忆工具；否则不启用自动整理。
-- **永久删除**：只允许用户显式操作（面板二次确认或 `memory_delete { permanent: true }`）；Auto Dream 的提示词禁止永久删除。
+- **永久删除**：只允许用户显式操作（面板二次确认、`memory_delete { permanent: true }`，或应用 `memory_sweep` 清理超过 `archiveMaxAgeDays` 的归档）；Auto Dream 的提示词禁止永久删除。
 
 ### 8.3 失败处理
 
@@ -719,7 +725,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 2. **相似度误报**：标题相近但内容不同的笔记会被报告。因此只报告、不自动合并；精确重复才自动归档。
 3. **O(n²) 审计**：200 篇以内可接受；超过后需要倒排索引或 MinHash，M4 再评估。
 4. **模型整理质量**：可能过度合并或保留噪音。通过“先读后删”、默认归档、变更日志、可恢复来降低风险；默认关闭。
-5. **归档无限增长**：M4 可加 `archiveMaxAgeDays` 或面板清理；当前先保证不丢数据。
+5. **归档无限增长**：已加 `archiveMaxAgeDays`（默认 30 天，0 永久保留）。只在 `memory_sweep` 显式应用时永久删除超期归档，dry-run 只报告；Auto Dream 不删除归档。全局层没有 sweep，目前只有项目归档参与清理。
 6. **跨进程锁的边界**：文件锁是 best-effort；崩溃后的过期锁需要 60 秒超时。单机 DSH 场景足够。
 7. **Windows 兼容**：`rename` 覆盖和锁文件语义需要在 Windows 上验证；现有原子写已经依赖 rename。
 8. **时间**：过期判断依赖本机时钟；统一存 UTC，展示用本地时区。

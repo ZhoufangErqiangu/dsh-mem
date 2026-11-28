@@ -1,0 +1,33 @@
+Package: @PACKAGE@
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DSH_PACKAGE@ (>= @DSH_MIN_VERSION@)
+Section: devel
+Priority: optional
+Homepage: @PLUGIN_REPO_URL@
+X-DSH-Plugin-Name: @PLUGIN_NAME@
+X-DSH-Plugin-Version: @PLUGIN_VERSION@
+X-DSH-Plugin-Commit: @PLUGIN_COMMIT@
+Description: project and user-global memory for DeepSeek Harness
+ Adds a per-project memory index and a cross-project user-global memory layer
+ to DeepSeek Harness. Each session receives the MEMORY.md index as one
+ injected context message, and eight tools maintain the store: memory_write,
+ memory_read, memory_search, memory_delete, memory_audit, memory_sweep,
+ memory_restore, and memory_dream.
+ .
+ The Web client adds an expandable Chat row for each injection and a /memory
+ panel that lists, edits, archives, restores, and tidies notes through an
+ owner-only route. Notes are plain markdown under $DSH_HOME/memory/ and never
+ appear in the repository.
+ .
+ Installs the plugin package root under @PLUGIN_INSTALL_DIR@.
+ It does not modify any user profile. Enable it for a profile with:
+ .
+   dsh plugin --profile @PROFILE@ add @PLUGIN_INSTALL_DIR@
+ .
+ or add the same directory on the Plugins page in the Web UI.
+ .
+ The plugin is architecture-independent JavaScript and runs inside the
+ Harness Host process with the profile user's privileges.

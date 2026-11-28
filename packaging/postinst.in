@@ -1,0 +1,31 @@
+#!/bin/sh
+# Post-install: explain how to enable the plugin.
+#
+# This package installs files only. It never edits a user profile: a profile
+# belongs to its user, enabling a Host plugin writes that user's package
+# manifest and lockfile, and a package maintainer script running as root must
+# not create root-owned files under ~/.dsh.
+set -e
+
+PKG=@PACKAGE@
+DIR=@PLUGIN_INSTALL_DIR@
+
+case "${1:-}" in
+  configure)
+    # $2 is the previously installed version; empty on a fresh install.
+    if [ -z "${2:-}" ]; then
+      echo "$PKG: installed the plugin package root at $DIR" >&2
+      echo "$PKG: enable it for a profile with:" >&2
+      echo "$PKG:   dsh plugin --profile @PROFILE@ add $DIR" >&2
+      echo "$PKG: or add $DIR on the Plugins page in the Web UI." >&2
+      echo "$PKG: restart a running Web UI afterwards: systemctl --user restart dsh-web" >&2
+    fi
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+  *)
+    echo "$PKG: postinst called with unknown argument '${1:-}'" >&2
+    ;;
+esac
+
+exit 0

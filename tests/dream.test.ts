@@ -43,6 +43,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     oversizeBytes: 16_384,
     maxAuditNotes: 200,
     archiveOverflow: false,
+    archiveMaxAgeDays: 30,
     curationEnabled: true,
     curationMinHours: 24,
     curationMinSessions: 5,

@@ -24,6 +24,9 @@ All notable changes to this plugin are recorded here. The project follows
 - `archive/.manifest.json` preserves the exact original file name, including
   names that the readable archive slug would otherwise change.
 - A GitHub Actions workflow running typecheck, tests, and the build on Node 24.
+- A reproducible Debian package build (`make deb`) that installs the plugin
+  package root under `/usr/lib/dsh/plugins/memory`, verifies the payload, and
+  publishes the `.deb` and its SHA-256 for `v*` tags.
 - User-global memory at `$DSH_HOME/memory/global/`, enabled by default and
   injected as a second, independently budgeted section before project memory.
 - `scope: 'project' | 'global'` on `memory_write`, `memory_read`,
@@ -31,6 +34,9 @@ All notable changes to this plugin are recorded here. The project follows
   searches both layers by default and labels every match with its scope.
 - A project/global switch in the `/memory` panel; global notes can be listed,
   read, edited, created, archived, permanently deleted, and restored.
+- `archiveMaxAgeDays` (default 30, `0` keeps forever): an applied
+  `memory_sweep` permanently removes archived notes past the retention window
+  and drops their manifest entries; dry runs report them without deleting.
 
 ### Changed
 
