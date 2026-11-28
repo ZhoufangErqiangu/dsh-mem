@@ -122,7 +122,7 @@ export async function withStoreLock<T>(dir: string, operation: () => Promise<T>)
   tails.set(key, tail)
   await previous
   try {
-    await mkdir(key, { recursive: true })
+    await mkdir(key, { recursive: true, mode: 0o700 })
     const unlock = await acquireFileLock(key, STORE_LOCK_FILE, STORE_STALE_MS, STORE_WAIT_MS)
     try {
       return await operation()
@@ -147,7 +147,7 @@ export async function tryAcquireCurationLock(dir: string): Promise<(() => Promis
   if (curationOwners.has(key)) return undefined
   curationOwners.add(key)
   try {
-    await mkdir(key, { recursive: true })
+    await mkdir(key, { recursive: true, mode: 0o700 })
     const unlock = await acquireFileLock(key, CURATION_LOCK_FILE, CURATION_STALE_MS, 0)
     return async () => {
       try {

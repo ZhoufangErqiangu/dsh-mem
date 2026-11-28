@@ -75,6 +75,8 @@ npm test           # node --test tests/*.test.ts
 
 本 profile 挂的是 `dsh-fs-sandbox`，`workspace-write` 模式下 `ctx.fs` 的写操作被限制在 workspace 内，写不到 `$DSH_HOME`。所以记忆文件由插件在 Host 侧原子写入，模型通过 `memory_write` 写入；读侧不受限，插件和模型都能直接读。
 
+新建的记忆目录使用 `0700`、笔记文件使用 `0600`（Windows 忽略）；已有目录和文件不会被强行改权限。
+
 ## 测试
 
 ```sh

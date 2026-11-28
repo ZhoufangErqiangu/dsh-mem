@@ -19,7 +19,7 @@ import { rename, rm, writeFile } from 'node:fs/promises'
 export async function atomicWrite(file: string, text: string): Promise<void> {
   const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
   try {
-    await writeFile(temporary, text, 'utf8')
+    await writeFile(temporary, text, { encoding: 'utf8', mode: 0o600 })
     await rename(temporary, file)
   }
   catch (error) {

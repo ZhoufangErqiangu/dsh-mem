@@ -90,7 +90,7 @@ async function oldTempFiles(dir: string, now: number): Promise<string[]> {
 async function archiveNote(dir: string, file: string, dryRun: boolean): Promise<string> {
   const target = archivePathOf(dir, archiveFileName(file))
   if (!dryRun) {
-    await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true })
+    await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true, mode: 0o700 })
     await rename(assertContained(dir, file), target)
   }
   return target
@@ -170,7 +170,7 @@ export async function sweepMemory(dir: string, options: SweepOptions): Promise<S
     if (!options.dryRun) {
       for (const item of archives) {
         const target = assertContained(dir, path.join(ARCHIVE_DIR, path.basename(item.archivePath)))
-        await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true })
+        await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true, mode: 0o700 })
         await rename(assertContained(dir, item.file), target)
         await rememberArchive(dir, path.basename(target), item.file)
         item.archivePath = target

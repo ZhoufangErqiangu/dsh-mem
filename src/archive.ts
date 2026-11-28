@@ -98,7 +98,7 @@ export async function readArchiveManifest(dir: string): Promise<ArchiveManifest>
  * @param manifest - complete mapping.
  */
 export async function writeArchiveManifest(dir: string, manifest: ArchiveManifest): Promise<void> {
-  await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true })
+  await mkdir(path.join(dir, ARCHIVE_DIR), { recursive: true, mode: 0o700 })
   await atomicWrite(path.join(dir, ARCHIVE_DIR, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`)
 }
 

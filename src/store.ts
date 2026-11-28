@@ -280,7 +280,7 @@ export async function writeMemory(
     : summaryFromHead(body)
   const text = body.trimStart().startsWith('#') ? ensureTrailingNewline(body) : `# ${title}\n\n${ensureTrailingNewline(body)}`
   return withStoreLock(dir, async () => {
-    await mkdir(dir, { recursive: true })
+    await mkdir(dir, { recursive: true, mode: 0o700 })
     await atomicWrite(target, text)
     const entries = await loadIndex(dir)
     const entry: MemoryEntry = { title, file, summary, indexed: true }
@@ -301,7 +301,7 @@ function ensureTrailingNewline(text: string): string {
 /** Move one note into `archive/` and return its absolute path. */
 async function archiveLocked(dir: string, file: string, _reason: ArchiveReason): Promise<string> {
   const archiveDir = path.join(dir, ARCHIVE_DIR)
-  await mkdir(archiveDir, { recursive: true })
+  await mkdir(archiveDir, { recursive: true, mode: 0o700 })
   const archivePath = resolveArchivePath(dir, archiveFileName(file))
   await rename(assertContained(dir, file), archivePath)
   await rememberArchive(dir, path.basename(archivePath), file)

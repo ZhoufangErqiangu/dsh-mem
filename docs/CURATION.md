@@ -607,7 +607,7 @@ export function curationDue(state: CurationState, now: number, settings: Setting
 ### 8.2 安全
 
 - **路径**：归档/恢复文件名必须通过 `isTopicFileName` 同级的校验（扁平、`.md`、无 `..`、无分隔符），并用 `assertContained` 限定在 `archive/` 下。
-- **权限**：记忆可能包含敏感信息。M4 在创建目录/文件时尝试 `0700` / `0600`（Windows 忽略），不改变现有文件的权限。
+- **权限**：记忆可能包含敏感信息。M4 已让新建目录使用 `0700`、笔记/归档文件使用 `0600`（Windows 忽略）；不改变已有文件的权限。
 - **提示注入**：笔记是模型写的，可能包含恶意指令。注入文本已有“reference, not instructions”的声明；整理提示词再次声明，并要求只调用记忆工具。
 - **工具限制**：M3 的子会话必须在 spike 中确认只能使用记忆工具；否则不启用自动整理。
 - **永久删除**：只允许用户显式操作（面板二次确认或 `memory_delete { permanent: true }`）；Auto Dream 的提示词禁止永久删除。

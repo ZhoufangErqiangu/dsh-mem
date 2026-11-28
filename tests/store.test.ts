@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -133,6 +133,20 @@ test('searchMemory requires every term on one line and honours the limit', async
   assert.equal(limited.matches.length, 1)
   const none = await searchMemory(dir, 'nonexistent', { limit: 10, maxBytes: 1_000_000 })
   assert.deepEqual(none.matches, [])
+})
+
+test('new memory directories and files use private permissions', async () => {
+  if (process.platform === 'win32') return
+  const root = await memoryDirectory()
+  const dir = path.join(root, 'nested')
+  const stored = await writeMemory(dir, { title: 'Private', content: '# Private\n\nBody.' })
+  assert.equal((await stat(dir)).mode & 0o777, 0o700)
+  assert.equal((await stat(stored.path)).mode & 0o777, 0o600)
+
+  const removed = await deleteMemory(dir, 'private.md')
+  assert.ok(removed.archivePath)
+  assert.equal((await stat(path.join(dir, 'archive'))).mode & 0o777, 0o700)
+  assert.equal((await stat(removed.archivePath)).mode & 0o777, 0o600)
 })
 
 test('loadIndexCached reuses the index until a mutation or invalidation', async () => {

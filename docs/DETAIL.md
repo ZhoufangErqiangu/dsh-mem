@@ -27,7 +27,7 @@ Each project gets a directory under the harness home:
 └── .dream.lock     # long-lived curation-session lock
 ```
 
-The project root is the nearest ancestor holding `.git`, matching how DSH scopes workspace instructions. Files are plain markdown and never appear in `git status`; edit or delete them by hand at any time, and the next session reconciles the index automatically.
+The project root is the nearest ancestor holding `.git`, matching how DSH scopes workspace instructions. Files are plain markdown and never appear in `git status`; edit or delete them by hand at any time, and the next session reconciles the index automatically. Newly created memory directories use mode `0700` and note files use `0600` (ignored where the platform has no POSIX modes); existing files are not forcibly chmodded.
 
 ## The management panel
 
