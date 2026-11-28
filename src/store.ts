@@ -9,6 +9,7 @@
  */
 
 import { existsSync } from 'node:fs'
+import { TextDecoder } from 'node:util'
 import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { atomicWrite } from './atomic.ts'
@@ -175,7 +176,10 @@ async function readBoundedText(file: string, maxBytes: number): Promise<{ text: 
     const length = Math.min(Math.max(info.size, 0), maxBytes)
     const buffer = Buffer.alloc(length)
     if (length > 0) await handle.read(buffer, 0, length, 0)
-    return { text: buffer.toString('utf8'), bytes: info.size, truncated: info.size > maxBytes }
+    // Stream mode holds back an incomplete trailing code point instead of
+    // emitting U+FFFD when the byte budget lands inside a character.
+    const text = length === 0 ? '' : new TextDecoder('utf-8', { fatal: false }).decode(buffer, { stream: true })
+    return { text, bytes: info.size, truncated: info.size > maxBytes }
   }
   finally {
     await handle.close()

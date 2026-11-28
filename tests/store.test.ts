@@ -133,6 +133,18 @@ test('searchMemory requires every term on one line and honours the limit', async
   assert.deepEqual(none.matches, [])
 })
 
+test('readMemory truncation never splits a UTF-8 character', async () => {
+  const dir = await memoryDirectory()
+  await writeFile(path.join(dir, 'raw.md'), 'a'.repeat(63) + '中', 'utf8')
+  const cut = await readMemory(dir, 'raw.md', 64)
+  assert.equal(cut.truncated, true)
+  assert.equal(cut.content, 'a'.repeat(63))
+  assert.doesNotMatch(cut.content, /\uFFFD/u)
+  const whole = await readMemory(dir, 'raw.md', 66)
+  assert.equal(whole.truncated, false)
+  assert.equal(whole.content, 'a'.repeat(63) + '中')
+})
+
 test('searchMemory measures the scan budget in UTF-8 bytes, not characters', async () => {
   const dir = await memoryDirectory()
   await writeMemory(dir, { title: 'Chinese', content: '# Chinese\n\n' + '中'.repeat(100) })
