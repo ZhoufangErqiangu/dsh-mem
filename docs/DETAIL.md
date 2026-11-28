@@ -111,6 +111,6 @@ The harness home is process policy (`DSH_HOME`), not row configuration.
 
 Sources are TypeScript under `src/` and are built with tsdown into `lib/` (ESM host bundle plus the browser client factory). The package exports point at `lib/`, so run `npm run build` before installing or reloading the plugin from a checkout.
 
-`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, the store and curation locks, soft delete and archiving, restore, deterministic sweep, write-time similarity hints, audit duplicate/stale/oversized detection, the Auto Dream clock and gate, the restricted curation child, and the pre-step injection contract.
+`npm run typecheck` checks the host half, the client half, and the tests. `npm test` runs `node --test tests/*.test.ts` (Node's native type stripping) and covers the store, the path fence, index reconciliation, budgeting, the store and curation locks, soft delete and archiving, restore, deterministic sweep, write-time similarity hints, audit duplicate/stale/oversized detection, the Auto Dream clock and gate, the restricted curation child, the pre-step injection contract, UTF-8 boundary reads, the index cache, and private file modes.
 
 At runtime, create a memory in one session and ask for it in a new session; this is described in the repository README.

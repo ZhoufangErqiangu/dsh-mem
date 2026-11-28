@@ -1,6 +1,6 @@
 # 记忆整理（Curation）设计稿
 
-- 状态：M1（写锁、软删除、审计、相似提示、预算提示）、M2（清扫、恢复、面板整理）、M3（Auto Dream + `memory_dream`）均已实现；M4 待做
+- 状态：M1（写锁、软删除、审计、相似提示、预算提示）、M2（清扫、恢复、面板整理）、M3（Auto Dream + `memory_dream`）、M4（编码/缓存/CI/权限）均已实现
 - 日期：2026-11-27
 - 适用版本：`0.4.0`（M1–M3）
 - 关联：[ROADMAP.md](./ROADMAP.md)、[DETAIL.md](./DETAIL.md)

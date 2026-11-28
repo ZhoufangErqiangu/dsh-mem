@@ -41,6 +41,8 @@ npm run typecheck  # tsc --noEmit，检查 src/ 与 tests/
 npm test           # node --test tests/*.test.ts
 ```
 
+GitHub Actions 在 push 到 `main` 和 pull request 上跑 typecheck、测试和构建，见 `.github/workflows/ci.yml`。
+
 - `src/index.ts`、`src/paths.ts`、`src/render.ts`、`src/store.ts`、`src/audit.ts`、`src/lock.ts`、`src/similarity.ts`：Host 半插件（工具、注入、面板路由、审计、写锁、相似度）
 - `src/client/index.ts`、`src/client/contracts.ts`：Client 半插件（聊天行、`/memory` 面板）；`tsdown` 把入口包成 `window.__ModuleLoader__.load` 的 CJS 工厂，React 从页面模块表解析
 - `lib/` 是构建产物，不入库；安装包只包含 `lib/`，不含 `src/`
@@ -83,7 +85,7 @@ npm test           # node --test tests/*.test.ts
 npm test
 ```
 
-覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话，以及 pre-step 注入契约。当前 57 项。
+覆盖存储层、路径越界防护、索引对账、预算截断、写锁、软删除/归档、恢复、确定性清扫、相似提示、审计的重复/过期/超长判断、整理状态机与整理子会话、UTF-8 边界、索引缓存、文件权限，以及 pre-step 注入契约。当前 61 项。
 
 测试直接运行 `tests/*.test.ts`（Node 原生类型剥离），不需要先构建。
 

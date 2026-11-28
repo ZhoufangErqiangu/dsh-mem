@@ -1,7 +1,7 @@
 # 路线图：从基础记忆到可维护的记忆
 
 - 日期：2026-11-27
-- 当前版本：`0.3.0`（TypeScript + tsdown，测试 57 项通过）
+- 当前版本：`0.3.0`（TypeScript + tsdown，测试 61 项通过）
 - 相关：[CURATION.md](./CURATION.md)（整理功能详细设计）、[DETAIL.md](./DETAIL.md)
 
 ## 1. 基线
@@ -26,6 +26,8 @@
 **M1 已完成（2026-11-27）**：项目级写锁、`memory_delete`（默认归档）、`memory_audit`、写入相似提示、索引超预算提示。
 
 **M2 已完成（2026-11-28）**：`memory_sweep`（默认 dry-run、空笔记/精确重复/旧临时文件/可选的预算溢出归档）、`memory_restore`（同名冲突拒绝）、面板“整理”报告与执行清扫、删除默认归档 + 永久删除二次确认。
+
+**M4 已完成（2026-11-28）**：`memory_search` 改为按 UTF-8 字节计预算；有界读取不再切断多字节字符；`pre-step` 使用短 TTL 索引缓存并在写/删/恢复/清扫时失效；新增 GitHub Actions CI、CHANGELOG；新建目录/文件使用 `0700`/`0600`。61 项测试、typecheck、build 通过。
 
 **M2 现场验收（2026-11-28）**：`memory_sweep` dry-run 报 3 → 2 条、预演归档 1 条；`dryRun: false` 归档了重复笔记并重写索引；`archive/.manifest.json` 记录了精确原文件名；`memory_restore` 恢复成功并清掉 manifest 条目；随后永久删除临时笔记，索引回到 1 条。`/api/memory` 对非 owner 的 curl 返回 401，符合 owner-only 设计；面板点击仍需人工看一眼。
 
@@ -57,9 +59,9 @@
 | 问题 | 影响 | 归属 |
 |---|---|---|
 | 索引“读-改-写”无锁 | 多会话并发写会丢索引行；靠 `loadIndex` 兜底但顺序/摘要会乱 | M1 ✅ |
-| `searchMemory` 用字符数当字节数 | `maxSearchBytes` 在非 ASCII 文本下失真 | M4 |
-| `readBoundedText` 按字节截断 | 可能切断多字节 UTF-8 字符，返回替换符 | M4 |
-| `pre-step` 每个 step 都全量读笔记头 | 一轮多 step 重复 I/O，笔记多时变慢 | M4 |
+| `searchMemory` 用字符数当字节数 | 已改为 `Buffer.byteLength` | M4 ✅ |
+| `readBoundedText` 按字节截断 | 已用流式 UTF-8 解码，不再产生替换符 | M4 ✅ |
+| `pre-step` 每个 step 都全量读笔记头 | 已加 5 秒索引缓存并显式失效 | M4 ✅ |
 | 临时文件崩溃残留 | `*.tmp` 可能长期堆积 | M2 |
 
 ### P2 — 召回与作用域（需要产品决策）
@@ -76,12 +78,12 @@
 
 | 项 | 说明 |
 |---|---|
-| CI | 目前只有本地 `npm test` / `npm run typecheck` |
-| CHANGELOG | 版本到了 0.3.0，没有变更记录 |
-| 文档同步 | 中文 README 与英文 DETAIL 已有轻微漂移 |
-| 客户端测试 | 面板路由有测试，Client 渲染/交互没有 |
-| 文件权限 | 记忆可能含敏感信息，建议目录 0700 / 文件 0600 |
-| 归档清理 | 归档只增不减，后续需要保留策略 |
+| CI | ✅ GitHub Actions：typecheck + test + build |
+| CHANGELOG | ✅ `CHANGELOG.md` 已建立 |
+| 文档同步 | ✅ 本轮的 README/DETAIL/ROADMAP 已同步 |
+| 客户端测试 | 面板路由有测试，Client 渲染/交互没有；仍待做 |
+| 文件权限 | ✅ 新建目录 0700 / 文件 0600 |
+| 归档清理 | 归档只增不减，后续需要保留策略；仍待做 |
 
 ## 4. 里程碑
 
@@ -90,7 +92,7 @@
 | **M1 整理地基（已完成）** | 让 agent 能判断和清理记忆 | 项目锁、`memory_delete`（默认归档）、`memory_audit`、写入相似提示、预算提示、配置、测试 | 能删除/归档、能拿到重复/过期/超长报告、并发写不丢行、测试全绿 |
 | **M2 清扫与面板（已完成）** | 让整理可见、可撤销 | `memory_sweep`、`memory_restore`、`archiveOverflow`、面板整理报告、归档/永久删除 | dry-run 不落盘；清扫只处理确定性项；归档可恢复；面板可用 |
 | **M3 Auto Dream（已完成）** | 自动语义整理 | `.state.json`、24h + 5 会话门槛、受限整理子会话、整理提示词、超时与锁、`memory_dream` 手动触发 | 默认关闭；开启后按门槛只跑一次；不递归、不并发、失败不阻塞 |
-| **M4 收尾** | 性能与产品化 | mtime 缓存、搜索字节 bug、UTF-8 截断、CI、CHANGELOG、权限、文档 | 性能可接受；CI 绿；文档与实现一致 |
+| **M4 收尾（已完成）** | 性能与产品化 | 索引缓存、搜索字节 bug、UTF-8 截断、CI、CHANGELOG、权限、文档 | 性能可接受；CI 绿；文档与实现一致 |
 
 依赖：M2 依赖 M1 的锁和归档；M3 依赖 M1 的审计和 M2 的清扫；M4 独立，可穿插。
 
@@ -101,7 +103,7 @@
 | 版本 | 内容 | 兼容性 |
 |---|---|---|
 | `0.4.0` | M1 + M2 + M3：审计、软删除/恢复、确定性清扫、面板整理、Auto Dream（默认关闭） | 索引格式不变；旧目录自动兼容；新增配置都有默认值 |
-| `0.5.0` | M4：性能、编码 bug、CI、文档收尾 | 行为不变 |
+| `0.5.0` | M4：性能、编码 bug、CI、文档收尾（代码已完成，版本号待发布时统一 bump） | 行为不变 |
 | `0.6.0` | 可能的召回/作用域扩展 | 待定 |
 
 每个版本都要求：`npm run build`、`npm run typecheck`、`npm test` 通过；新工具的描述和 schema 在 `DETAIL.md` 更新；README 的“已知边界”同步删改。
@@ -117,5 +119,5 @@
 ## 7. 建议的下一步
 
 1. 已确认：软删除、Auto Dream 默认关闭、近似重复只报告。剩余待定项（模型路由、全局作用域、归档溢出）见 [CURATION.md](./CURATION.md) 第 13 节。
-2. M1、M2、M3 已完成。下一步是 M4：`pre-step` 缓存、`searchMemory` 字节 bug、UTF-8 截断、CI/CHANGELOG、文件权限。
+2. M1–M4 均已完成。剩余是 P2 产品决策（语义检索、用户全局记忆、watcher）和 P3 的 Client 渲染测试、归档保留策略。
 3. 自动门槛的现场触发仍未开启验证；可用较低的 `curationMinHours`/`curationMinSessions` 在测试项目上验收。
